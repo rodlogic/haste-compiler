@@ -17,6 +17,7 @@ import Control.Shell
 import Data.Char (isDigit)
 import Control.Monad.IO.Class (liftIO)
 import Args
+import System.Directory(getCurrentDirectory)
 
 downloadFile :: String -> Shell BS.ByteString
 downloadFile f = do
@@ -28,7 +29,7 @@ downloadFile f = do
         rqHeaders = [],
         rqBody = BS.empty
       }
-  case rspCode rsp of 
+  case rspCode rsp of
     (2, _, _) -> return $ rspBody rsp
     _         -> fail $ "Failed to download " ++ f ++ ": " ++ rspReason rsp
 
@@ -81,6 +82,7 @@ specs = [
 main :: IO ()
 main = do
   args <- getArgs
+  liftIO $ putStrLn $ "==> [haste-pkg] " ++ (show args)
   case handleArgs defCfg specs args of
     Right (cfg, _) -> do
       when (needsReboot || forceBoot cfg) $ do
@@ -95,17 +97,26 @@ main = do
 
 bootHaste :: Cfg -> FilePath -> Shell ()
 bootHaste cfg tmpdir = inDirectory tmpdir $ do
+  liftIO $ putStrLn "==> [haste-pkg] Booting!"
   removeBootFile <- isFile bootFile
-  when removeBootFile $ rm bootFile
+  when removeBootFile $ do
+    liftIO $ putStrLn $ "==> [haste-pkg] Removing boot file " ++ show bootFile
+    rm bootFile
   when (getLibs cfg) $ do
     when (not $ useLocalLibs cfg) $ do
       fetchLibs tmpdir
     exists <- isDirectory hasteInstDir
-    when exists $ rmdir hasteInstDir
+    when exists $ do
+      liftIO $ putStrLn $ "==> [haste-pkg] Removing install dir " ++ show hasteInstDir
+      rmdir hasteInstDir
     exists <- isDirectory jsmodDir
-    when exists $ rmdir jsmodDir
+    when exists $ do
+      liftIO $ putStrLn $ "==> [haste-pkg] Removing jsmod dir " ++ show jsmodDir
+      rmdir jsmodDir
     exists <- isDirectory pkgDir
-    when exists $ rmdir pkgDir
+    when exists $ do
+      liftIO $ putStrLn $ "==> [haste-pkg] Removing pkg dir " ++ show pkgDir
+      rmdir pkgDir
     buildLibs cfg
   when (getClosure cfg) $ do
     installClosure
@@ -137,23 +148,29 @@ installClosure = do
 buildLibs :: Cfg -> Shell ()
 buildLibs cfg = do
     -- Set up dirs and copy includes
+    liftIO $ putStrLn $ "==> [haste-pkg] Build libs "
+
+    liftIO $ putStrLn $ "==> [haste-pkg] Make package lib dir " ++ show pkgLibDir
     mkdir True $ pkgLibDir
     cpDir "include" hasteDir
+    liftIO $ putStrLn $ "==> [haste-pkg] Run hastePkgBinary " ++ show hastePkgBinary
     run_ hastePkgBinary ["update", "libraries" </> "rts.pkg"] ""
-    
+
     inDirectory "libraries" $ do
       -- Install ghc-prim
       inDirectory "ghc-prim" $ do
         hasteInst ["configure", "--solver", "topdown"]
         hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
-        run_ hasteInstHisBinary ["ghc-prim-0.3.0.0", "dist" </> "build"] ""
+        cwd <- liftIO $ getCurrentDirectory
+        liftIO $ putStrLn $ cwd ++ "==> [haste-pkg] hasteInstHsisBinary " ++ (show $ ["ghc-prim-0.3.1.0", "dist" </> "build"])
+        run_ hasteInstHisBinary ["ghc-prim-0.3.1.0", "dist" </> "build"] ""
         run_ hastePkgBinary ["update", "packageconfig"] ""
-      
+
       -- Install integer-gmp; double install shouldn't be needed anymore.
       run_ hasteCopyPkgBinary ["Cabal"] ""
       inDirectory "integer-gmp" $ do
         hasteInst ("install" : "--solver" : "topdown" : ghcOpts)
-      
+
       -- Install base
       inDirectory "base" $ do
         basever <- file "base.cabal" >>= return
@@ -166,10 +183,13 @@ buildLibs cfg = do
         hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
         let base = "base-" ++ basever
             pkgdb = "--package-db=dist" </> "package.conf.inplace"
+        cwd <- liftIO $ getCurrentDirectory
+        liftIO $ putStrLn $ cwd ++ "==> [haste-pkg] " ++ hasteInstHisBinary ++ (show $ [base, "dist" </> "build"])
         run_ hasteInstHisBinary [base, "dist" </> "build"] ""
+        liftIO $ putStrLn $ cwd ++ "==> [haste-pkg] " ++ hasteCopyPkgBinary ++ (show $ [base, "dist" </> "build"])
         run_ hasteCopyPkgBinary [base, pkgdb] ""
         forEachFile "include" $ \f -> cp f (hasteDir </> "include")
-      
+
       -- Install array and haste-lib
       forM_ ["array", "haste-lib"] $ \pkg -> do
         inDirectory pkg $ hasteInst ("install" : ghcOpts)
@@ -179,7 +199,9 @@ buildLibs cfg = do
   where
     ghcOpts = concat [
         if tracePrimops cfg then ["--ghc-option=-debug"] else [],
-        ["--ghc-option=-DHASTE_HOST_WORD_SIZE_IN_BITS=" ++ show hostWordSize]
+        ["--ghc-option=-DHASTE_HOST_WORD_SIZE_IN_BITS=" ++ show hostWordSize, "--ghc-option=-DWORD_SIZE_IN_BITS=64"]
       ]
-    hasteInst args =
+    hasteInst args = do
+      cwd <- liftIO $ getCurrentDirectory
+      liftIO $ putStrLn $ cwd ++ "==> [haste-pkg] " ++ hasteInstBinary ++ (show ("--unbooted" : args))
       run_ hasteInstBinary ("--unbooted" : args) ""

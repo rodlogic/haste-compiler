@@ -1,6 +1,5 @@
 {-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE CPP, NoImplicitPrelude, ForeignFunctionInterface, CApiFFI,
-             EmptyDataDecls #-}
+{-# LANGUAGE CPP, NoImplicitPrelude, CApiFFI #-}
 {-# OPTIONS_HADDOCK hide #-}
 
 -----------------------------------------------------------------------------
@@ -21,14 +20,9 @@
 --
 -----------------------------------------------------------------------------
 
--- #hide
 module System.Posix.Internals where
 
-#ifdef __NHC__
-#define HTYPE_TCFLAG_T
-#else
-# include "HsBaseConfig.h"
-#endif
+#include "HsBaseConfig.h"
 
 #if ! (defined(mingw32_HOST_OS) || defined(__MINGW32__))
 import Control.Monad
@@ -45,7 +39,6 @@ import Data.Maybe
 import System.IO.Error
 #endif
 
-#if __GLASGOW_HASKELL__
 import GHC.Base
 import GHC.Num
 import GHC.Real
@@ -57,20 +50,6 @@ import GHC.IO.Device
 import {-# SOURCE #-} GHC.IO.Encoding (getFileSystemEncoding)
 import qualified GHC.Foreign as GHC
 #endif
-#elif __HUGS__
-import Hugs.Prelude (IOException(..), IOErrorType(..))
-import Hugs.IO (IOMode(..))
-#elif __NHC__
-import GHC.IO.Device	-- yes, I know, but its portable, really!
-import System.IO
-import Control.Exception
-import DIOError
-#endif
-
-#ifdef __HUGS__
-{-# CFILES cbits/PrelIOUtils.c cbits/consUtils.c #-}
-#endif
-
 
 -- ---------------------------------------------------------------------------
 -- Debugging the base package
@@ -105,86 +84,267 @@ type FD = CInt
 -- stat()-related stuff
 
 fdFileSize :: FD -> IO Integer
-fdFileSize _ = error "fdFileSize is not implemented"
+fdFileSize fd = 
+  allocaBytes sizeof_stat $ \ p_stat -> do
+    throwErrnoIfMinus1Retry_ "fileSize" $
+        c_fstat fd p_stat
+    c_mode <- st_mode p_stat :: IO CMode 
+    if not (s_isreg c_mode)
+        then return (-1)
+        else do
+      c_size <- st_size p_stat
+      return (fromIntegral c_size)
 
 fileType :: FilePath -> IO IODeviceType
-fileType _ = error "fileType is not implemented"
+fileType file =
+  allocaBytes sizeof_stat $ \ p_stat -> do
+  withFilePath file $ \p_file -> do
+    throwErrnoIfMinus1Retry_ "fileType" $
+      c_stat p_file p_stat
+    statGetType p_stat
 
 -- NOTE: On Win32 platforms, this will only work with file descriptors
 -- referring to file handles. i.e., it'll fail for socket FDs.
 fdStat :: FD -> IO (IODeviceType, CDev, CIno)
-fdStat _ = error "fdStat is not implemented"
+fdStat fd = 
+  allocaBytes sizeof_stat $ \ p_stat -> do
+    throwErrnoIfMinus1Retry_ "fdType" $
+        c_fstat fd p_stat
+    ty <- statGetType p_stat
+    dev <- st_dev p_stat
+    ino <- st_ino p_stat
+    return (ty,dev,ino)
     
 fdType :: FD -> IO IODeviceType
-fdType _ = error "fdType is not implemented"
+fdType fd = do (ty,_,_) <- fdStat fd; return ty
 
 statGetType :: Ptr CStat -> IO IODeviceType
-statGetType _ = error "statGetType is not implemented"
+statGetType p_stat = do
+  c_mode <- st_mode p_stat :: IO CMode
+  case () of
+      _ | s_isdir c_mode        -> return Directory
+        | s_isfifo c_mode || s_issock c_mode || s_ischr  c_mode
+                                -> return Stream
+        | s_isreg c_mode        -> return RegularFile
+         -- Q: map char devices to RawDevice too?
+        | s_isblk c_mode        -> return RawDevice
+        | otherwise             -> ioError ioe_unknownfiletype
     
 ioe_unknownfiletype :: IOException
-#ifndef __NHC__
 ioe_unknownfiletype = IOError Nothing UnsupportedOperation "fdType"
                         "unknown file type"
-#  if __GLASGOW_HASKELL__
                         Nothing
-#  endif
                         Nothing
-#else
-ioe_unknownfiletype = UserError "fdType" "unknown file type"
-#endif
 
 fdGetMode :: FD -> IO IOMode
-fdGetMode _ = error "fdGetMode is not implemented"
+#if defined(mingw32_HOST_OS) || defined(__MINGW32__)
+fdGetMode _ = do
+    -- We don't have a way of finding out which flags are set on FDs
+    -- on Windows, so make a handle that thinks that anything goes.
+    let flags = o_RDWR
+#else
+fdGetMode fd = do
+    flags <- throwErrnoIfMinus1Retry "fdGetMode" 
+                (c_fcntl_read fd const_f_getfl)
+#endif
+    let
+       wH  = (flags .&. o_WRONLY) /= 0
+       aH  = (flags .&. o_APPEND) /= 0
+       rwH = (flags .&. o_RDWR) /= 0
+
+       mode
+         | wH && aH  = AppendMode
+         | wH        = WriteMode
+         | rwH       = ReadWriteMode
+         | otherwise = ReadMode
+          
+    return mode
 
 #ifdef mingw32_HOST_OS
 withFilePath :: FilePath -> (CWString -> IO a) -> IO a
-withFilePath _ _ = error "withFilePath not implemented"
+withFilePath = withCWString
+
+newFilePath :: FilePath -> IO CWString
+newFilePath = newCWString
+
 peekFilePath :: CWString -> IO FilePath
-peekFilePath _ = error "peekFilePath not implemented"
+peekFilePath = peekCWString
 #else
 
 withFilePath :: FilePath -> (CString -> IO a) -> IO a
+newFilePath :: FilePath -> IO CString
 peekFilePath :: CString -> IO FilePath
 peekFilePathLen :: CStringLen -> IO FilePath
 
-withFilePath = withCString
-peekFilePath = peekCString
-peekFilePathLen = peekCStringLen
+withFilePath fp f = getFileSystemEncoding >>= \enc -> GHC.withCString enc fp f
+newFilePath fp = getFileSystemEncoding >>= \enc -> GHC.newCString enc fp
+peekFilePath fp = getFileSystemEncoding >>= \enc -> GHC.peekCString enc fp
+peekFilePathLen fp = getFileSystemEncoding >>= \enc -> GHC.peekCStringLen enc fp
 
 #endif
 
 -- ---------------------------------------------------------------------------
 -- Terminal-related stuff
 
+#if defined(HTYPE_TCFLAG_T)
+
 setEcho :: FD -> Bool -> IO ()
-setEcho _ _ = return () -- always false for browsers
+setEcho fd on = do
+  tcSetAttr fd $ \ p_tios -> do
+    lflag <- c_lflag p_tios :: IO CTcflag
+    let new_lflag
+         | on        = lflag .|. fromIntegral const_echo
+         | otherwise = lflag .&. complement (fromIntegral const_echo)
+    poke_c_lflag p_tios (new_lflag :: CTcflag)
 
 getEcho :: FD -> IO Bool
-getEcho _ = return False -- always false for browsers
+getEcho fd = do
+  tcSetAttr fd $ \ p_tios -> do
+    lflag <- c_lflag p_tios :: IO CTcflag
+    return ((lflag .&. fromIntegral const_echo) /= 0)
 
 setCooked :: FD -> Bool -> IO ()
-setCooked _ _ = return ()
+setCooked fd cooked = 
+  tcSetAttr fd $ \ p_tios -> do
+
+    -- turn on/off ICANON
+    lflag <- c_lflag p_tios :: IO CTcflag
+    let new_lflag | cooked    = lflag .|. (fromIntegral const_icanon)
+                  | otherwise = lflag .&. complement (fromIntegral const_icanon)
+    poke_c_lflag p_tios (new_lflag :: CTcflag)
+
+    -- set VMIN & VTIME to 1/0 respectively
+    when (not cooked) $ do
+            c_cc <- ptr_c_cc p_tios
+            let vmin  = (c_cc `plusPtr` (fromIntegral const_vmin))  :: Ptr Word8
+                vtime = (c_cc `plusPtr` (fromIntegral const_vtime)) :: Ptr Word8
+            poke vmin  1
+            poke vtime 0
 
 tcSetAttr :: FD -> (Ptr CTermios -> IO a) -> IO a
-tcSetAttr _ _ = error "tcSetAttr not implemented"
+tcSetAttr fd fun = do
+     allocaBytes sizeof_termios  $ \p_tios -> do
+        throwErrnoIfMinus1Retry_ "tcSetAttr"
+           (c_tcgetattr fd p_tios)
 
-get_saved_termios :: CInt -> IO (Ptr CTermios)
-get_saved_termios _ = error "get_saved_termios not implemented"
+        -- Save a copy of termios, if this is a standard file descriptor.
+        -- These terminal settings are restored in hs_exit().
+        when (fd <= 2) $ do
+          p <- get_saved_termios fd
+          when (p == nullPtr) $ do
+             saved_tios <- mallocBytes sizeof_termios
+             copyBytes saved_tios p_tios sizeof_termios
+             set_saved_termios fd saved_tios
 
-set_saved_termios :: CInt -> (Ptr CTermios) -> IO ()
-set_saved_termios _ _ = error "set_saved_termios not implemented"
+        -- tcsetattr() when invoked by a background process causes the process
+        -- to be sent SIGTTOU regardless of whether the process has TOSTOP set
+        -- in its terminal flags (try it...).  This function provides a
+        -- wrapper which temporarily blocks SIGTTOU around the call, making it
+        -- transparent.
+        allocaBytes sizeof_sigset_t $ \ p_sigset -> do
+          allocaBytes sizeof_sigset_t $ \ p_old_sigset -> do
+             throwErrnoIfMinus1_ "sigemptyset" $
+                 c_sigemptyset p_sigset
+             throwErrnoIfMinus1_ "sigaddset" $
+                 c_sigaddset   p_sigset const_sigttou
+             throwErrnoIfMinus1_ "sigprocmask" $
+                 c_sigprocmask const_sig_block p_sigset p_old_sigset
+             r <- fun p_tios  -- do the business
+             throwErrnoIfMinus1Retry_ "tcSetAttr" $
+                 c_tcsetattr fd const_tcsanow p_tios
+             throwErrnoIfMinus1_ "sigprocmask" $
+                 c_sigprocmask const_sig_setmask p_old_sigset nullPtr
+             return r
+
+foreign import ccall unsafe "HsBase.h __hscore_get_saved_termios"
+   get_saved_termios :: CInt -> IO (Ptr CTermios)
+
+foreign import ccall unsafe "HsBase.h __hscore_set_saved_termios"
+   set_saved_termios :: CInt -> (Ptr CTermios) -> IO ()
+
+#else
+
+-- 'raw' mode for Win32 means turn off 'line input' (=> buffering and
+-- character translation for the console.) The Win32 API for doing
+-- this is GetConsoleMode(), which also requires echoing to be disabled
+-- when turning off 'line input' processing. Notice that turning off
+-- 'line input' implies enter/return is reported as '\r' (and it won't
+-- report that character until another character is input..odd.) This
+-- latter feature doesn't sit too well with IO actions like IO.hGetLine..
+-- consider yourself warned.
+setCooked :: FD -> Bool -> IO ()
+setCooked fd cooked = do
+  x <- set_console_buffering fd (if cooked then 1 else 0)
+  if (x /= 0)
+   then ioError (ioe_unk_error "setCooked" "failed to set buffering")
+   else return ()
+
+ioe_unk_error :: String -> String -> IOException
+ioe_unk_error loc msg 
+ = ioeSetErrorString (mkIOError OtherError loc Nothing Nothing) msg
+
+-- Note: echoing goes hand in hand with enabling 'line input' / raw-ness
+-- for Win32 consoles, hence setEcho ends up being the inverse of setCooked.
+setEcho :: FD -> Bool -> IO ()
+setEcho fd on = do
+  x <- set_console_echo fd (if on then 1 else 0)
+  if (x /= 0)
+   then ioError (ioe_unk_error "setEcho" "failed to set echoing")
+   else return ()
+
+getEcho :: FD -> IO Bool
+getEcho fd = do
+  r <- get_console_echo fd
+  if (r == (-1))
+   then ioError (ioe_unk_error "getEcho" "failed to get echoing")
+   else return (r == 1)
+
+foreign import ccall unsafe "consUtils.h set_console_buffering__"
+   set_console_buffering :: CInt -> CInt -> IO CInt
+
+foreign import ccall unsafe "consUtils.h set_console_echo__"
+   set_console_echo :: CInt -> CInt -> IO CInt
+
+foreign import ccall unsafe "consUtils.h get_console_echo__"
+   get_console_echo :: CInt -> IO CInt
+
+foreign import ccall unsafe "consUtils.h is_console__"
+   is_console :: CInt -> IO CInt
+
+#endif
 
 -- ---------------------------------------------------------------------------
 -- Turning on non-blocking for a file descriptor
 
 setNonBlockingFD :: FD -> Bool -> IO ()
-setNonBlockingFD _ _ = return () -- doesn't do anything in a browser
+#if !defined(mingw32_HOST_OS) && !defined(__MINGW32__)
+setNonBlockingFD fd set = do
+  flags <- throwErrnoIfMinus1Retry "setNonBlockingFD"
+                 (c_fcntl_read fd const_f_getfl)
+  let flags' | set       = flags .|. o_NONBLOCK
+             | otherwise = flags .&. complement o_NONBLOCK
+  unless (flags == flags') $ do
+    -- An error when setting O_NONBLOCK isn't fatal: on some systems
+    -- there are certain file handles on which this will fail (eg. /dev/null
+    -- on FreeBSD) so we throw away the return code from fcntl_write.
+    _ <- c_fcntl_write fd const_f_setfl (fromIntegral flags')
+    return ()
+#else
+
+-- bogus defns for win32
+setNonBlockingFD _ _ = return ()
+
+#endif
 
 -- -----------------------------------------------------------------------------
 -- Set close-on-exec for a file descriptor
 
+#if !defined(mingw32_HOST_OS) && !defined(__MINGW32__)
 setCloseOnExec :: FD -> IO ()
-setCloseOnExec fd = return () -- does nothing for a browser
+setCloseOnExec fd = do
+  throwErrnoIfMinus1_ "setCloseOnExec" $
+    c_fcntl_write fd const_f_setfd const_fd_cloexec
+#endif
 
 -- -----------------------------------------------------------------------------
 -- foreign imports
@@ -195,120 +355,126 @@ type CFilePath = CString
 type CFilePath = CWString
 #endif
 
-c_access :: CString -> CInt -> IO CInt
-c_access = error "c_access not implemented"
+foreign import ccall unsafe "HsBase.h access"
+   c_access :: CString -> CInt -> IO CInt
 
-c_chmod :: CString -> CMode -> IO CInt
-c_chmod = error "c_chmod not implemented"
+foreign import ccall unsafe "HsBase.h chmod"
+   c_chmod :: CString -> CMode -> IO CInt
 
-c_close :: CInt -> IO CInt
-c_close = error "c_close not implemented"
+foreign import ccall unsafe "HsBase.h close"
+   c_close :: CInt -> IO CInt
 
-c_creat :: CString -> CMode -> IO CInt
-c_creat = error "c_creat not implemented"
+foreign import ccall unsafe "HsBase.h creat"
+   c_creat :: CString -> CMode -> IO CInt
 
-c_dup :: CInt -> IO CInt
-c_dup = error "c_dup not implemented"
+foreign import ccall unsafe "HsBase.h dup"
+   c_dup :: CInt -> IO CInt
 
-c_dup2 :: CInt -> CInt -> IO CInt
-c_dup2 = error "c_dup2 not implemented"
+foreign import ccall unsafe "HsBase.h dup2"
+   c_dup2 :: CInt -> CInt -> IO CInt
 
-c_fstat :: CInt -> Ptr CStat -> IO CInt
-c_fstat = error "c_fstat not implemented"
+foreign import ccall unsafe "HsBase.h __hscore_fstat"
+   c_fstat :: CInt -> Ptr CStat -> IO CInt
 
-c_isatty :: CInt -> IO CInt
-c_isatty = error "c_isatty not implemented"
-
+foreign import ccall unsafe "HsBase.h isatty"
+   c_isatty :: CInt -> IO CInt
 
 #if defined(mingw32_HOST_OS) || defined(__MINGW32__)
-c_lseek :: CInt -> Int64 -> CInt -> IO Int64
-c_lseek = error "c_lseek not implemented"
+foreign import ccall unsafe "io.h _lseeki64"
+   c_lseek :: CInt -> Int64 -> CInt -> IO Int64
 #else
 -- We use CAPI as on some OSs (eg. Linux) this is wrapped by a macro
 -- which redirects to the 64-bit-off_t versions when large file
 -- support is enabled.
-c_lseek :: CInt -> COff -> CInt -> IO COff
-c_lseek = error "c_lseek not implemented"
+foreign import capi unsafe "unistd.h lseek"
+   c_lseek :: CInt -> COff -> CInt -> IO COff
 #endif
 
-lstat :: CFilePath -> Ptr CStat -> IO CInt
-lstat = error "lstat not implemented"
+foreign import ccall unsafe "HsBase.h __hscore_lstat"
+   lstat :: CFilePath -> Ptr CStat -> IO CInt
 
-c_open :: CFilePath -> CInt -> CMode -> IO CInt
-c_open = error "c_open not implemented"
+foreign import ccall unsafe "HsBase.h __hscore_open"
+   c_open :: CFilePath -> CInt -> CMode -> IO CInt
 
-c_safe_open :: CFilePath -> CInt -> CMode -> IO CInt
-c_safe_open = error "c_safe_open not implemented"
+foreign import ccall safe "HsBase.h __hscore_open"
+   c_safe_open :: CFilePath -> CInt -> CMode -> IO CInt
 
-c_read :: CInt -> Ptr Word8 -> CSize -> IO CSsize
-c_read = error "c_read not implemented"
+-- See Note: CSsize
+foreign import capi unsafe "HsBase.h read"
+   c_read :: CInt -> Ptr Word8 -> CSize -> IO CSsize
 
-c_safe_read :: CInt -> Ptr Word8 -> CSize -> IO CSsize
-c_safe_read = error "c_safe_read not implemented"
+-- See Note: CSsize
+foreign import capi safe "HsBase.h read"
+   c_safe_read :: CInt -> Ptr Word8 -> CSize -> IO CSsize
 
-c_stat :: CFilePath -> Ptr CStat -> IO CInt
-c_stat = error "c_stat not implemented"
+foreign import ccall unsafe "HsBase.h __hscore_stat"
+   c_stat :: CFilePath -> Ptr CStat -> IO CInt
 
-c_umask :: CMode -> IO CMode
-c_umask = error "c_umask not implemented"
+foreign import ccall unsafe "HsBase.h umask"
+   c_umask :: CMode -> IO CMode
 
-c_write :: CInt -> Ptr Word8 -> CSize -> IO CSsize
-c_write = error "c_write not implemented"
+-- See Note: CSsize
+foreign import capi unsafe "HsBase.h write"
+   c_write :: CInt -> Ptr Word8 -> CSize -> IO CSsize
 
-c_safe_write :: CInt -> Ptr Word8 -> CSize -> IO CSsize
-c_safe_write = error "c_safe_write not implemented"
+-- See Note: CSsize
+foreign import capi safe "HsBase.h write"
+   c_safe_write :: CInt -> Ptr Word8 -> CSize -> IO CSsize
 
-c_ftruncate :: CInt -> COff -> IO CInt
-c_ftruncate = error "c_ftruncate not implemented"
+foreign import ccall unsafe "HsBase.h __hscore_ftruncate"
+   c_ftruncate :: CInt -> COff -> IO CInt
 
-c_unlink :: CString -> IO CInt
-c_unlink = error "c_unlink not implemented"
+foreign import ccall unsafe "HsBase.h unlink"
+   c_unlink :: CString -> IO CInt
 
-c_getpid :: IO CPid
-c_getpid = return 0
+foreign import ccall unsafe "HsBase.h getpid"
+   c_getpid :: IO CPid
 
 #if !defined(mingw32_HOST_OS) && !defined(__MINGW32__)
-c_fcntl_read  :: CInt -> CInt -> IO CInt
-c_fcntl_read = error "c_fcntl_read not implemented"
+foreign import capi unsafe "HsBase.h fcntl"
+   c_fcntl_read  :: CInt -> CInt -> IO CInt
 
-c_fcntl_write :: CInt -> CInt -> CLong -> IO CInt
-c_fcntl_write = error "c_fcntl_write not implemented"
+foreign import capi unsafe "HsBase.h fcntl"
+   c_fcntl_write :: CInt -> CInt -> CLong -> IO CInt
 
-c_fcntl_lock  :: CInt -> CInt -> Ptr CFLock -> IO CInt
-c_fcntl_lock = error "c_fcntl_lock not implemented"
+foreign import capi unsafe "HsBase.h fcntl"
+   c_fcntl_lock  :: CInt -> CInt -> Ptr CFLock -> IO CInt
 
-c_fork :: IO CPid
-c_fork = error "c_fork not implemented"
+foreign import ccall unsafe "HsBase.h fork"
+   c_fork :: IO CPid 
 
-c_link :: CString -> CString -> IO CInt
-c_link = error "c_link not implemented"
+foreign import ccall unsafe "HsBase.h link"
+   c_link :: CString -> CString -> IO CInt
 
-c_mkfifo :: CString -> CMode -> IO CInt
-c_mkfifo = error "c_mkfifo not implemented"
+-- capi is required at least on Android
+foreign import capi unsafe "HsBase.h mkfifo"
+   c_mkfifo :: CString -> CMode -> IO CInt
 
-c_pipe :: Ptr CInt -> IO CInt
-c_pipe = error "c_pipe not implemented"
+foreign import ccall unsafe "HsBase.h pipe"
+   c_pipe :: Ptr CInt -> IO CInt
 
-c_sigemptyset :: Ptr CSigset -> IO CInt
-c_sigemptyset = error "c_sigemptyset not implemented"
+foreign import capi unsafe "signal.h sigemptyset"
+   c_sigemptyset :: Ptr CSigset -> IO CInt
 
-c_sigaddset :: Ptr CSigset -> CInt -> IO CInt
-c_sigaddset = error "c_sigaddset not implemented"
+foreign import capi unsafe "signal.h sigaddset"
+   c_sigaddset :: Ptr CSigset -> CInt -> IO CInt
 
-c_sigprocmask :: CInt -> Ptr CSigset -> Ptr CSigset -> IO CInt
-c_sigprocmask = error "c_sigprocmask not implemented"
+foreign import capi unsafe "signal.h sigprocmask"
+   c_sigprocmask :: CInt -> Ptr CSigset -> Ptr CSigset -> IO CInt
 
-c_tcgetattr :: CInt -> Ptr CTermios -> IO CInt
-c_tcgetattr = error "c_tcgetattr not implemented"
+-- capi is required at least on Android
+foreign import capi unsafe "HsBase.h tcgetattr"
+   c_tcgetattr :: CInt -> Ptr CTermios -> IO CInt
 
-c_tcsetattr :: CInt -> CInt -> Ptr CTermios -> IO CInt
-c_tcsetattr = error "c_tcsetattr not implemented"
+-- capi is required at least on Android
+foreign import capi unsafe "HsBase.h tcsetattr"
+   c_tcsetattr :: CInt -> CInt -> Ptr CTermios -> IO CInt
 
-c_utime :: CString -> Ptr CUtimbuf -> IO CInt
-c_utime = error "c_utime not implemented"
+foreign import capi unsafe "HsBase.h utime"
+   c_utime :: CString -> Ptr CUtimbuf -> IO CInt
 
-c_waitpid :: CPid -> Ptr CInt -> CInt -> IO CPid
-c_waitpid = error "c_waitpid not implemented"
+foreign import ccall unsafe "HsBase.h waitpid"
+   c_waitpid :: CPid -> Ptr CInt -> CInt -> IO CPid
 #endif
 
 -- POSIX flags only:
@@ -384,10 +550,9 @@ s_issock _ = False
 #endif
 
 foreign import ccall unsafe "__hscore_bufsiz"  dEFAULT_BUFFER_SIZE :: Int
-sEEK_CUR, sEEK_SET, sEEK_END :: CInt
-sEEK_CUR = 0
-sEEK_SET = 1
-sEEK_END = 2
+foreign import capi  unsafe "stdio.h value SEEK_CUR" sEEK_CUR :: CInt
+foreign import capi  unsafe "stdio.h value SEEK_SET" sEEK_SET :: CInt
+foreign import capi  unsafe "stdio.h value SEEK_END" sEEK_END :: CInt
 
 {-
 Note: CSsize

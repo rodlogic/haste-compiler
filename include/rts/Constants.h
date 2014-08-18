@@ -13,7 +13,7 @@
  * DerivedConstants.h by a C program (mkDerivedConstantsHdr).
  *
  * To understand the structure of the RTS headers, see the wiki:
- *   http://hackage.haskell.org/trac/ghc/wiki/Commentary/SourceTree/Includes
+ *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/SourceTree/Includes
  *
  * -------------------------------------------------------------------------- */
 
@@ -81,9 +81,10 @@
    -------------------------------------------------------------------------- */
 
 #define MAX_VANILLA_REG 10
-#define MAX_FLOAT_REG   4
-#define MAX_DOUBLE_REG  2
+#define MAX_FLOAT_REG   6
+#define MAX_DOUBLE_REG  6
 #define MAX_LONG_REG    1
+#define MAX_XMM_REG     6
 
 /* -----------------------------------------------------------------------------
    Semi-Tagging constants
@@ -118,11 +119,6 @@
    pushed in one of the heap check fragments in HeapStackCheck.hc
    (ie. currently the generic heap checks - 3 words for StgRetDyn,
    18 words for the saved registers, see StgMacros.h).
-
-   In the event of an unboxed tuple or let-no-escape stack/heap check
-   failure, there will be other words on the stack which are covered
-   by the RET_DYN frame.  These will have been accounted for by stack
-   checks however, so we don't need to allow for them here.
    -------------------------------------------------------------------------- */
 
 #define RESERVED_STACK_WORDS 21
@@ -206,6 +202,7 @@
  */
 #define NotBlocked          0
 #define BlockedOnMVar       1
+#define BlockedOnMVarRead   14 /* TODO: renumber me, see #9003 */
 #define BlockedOnBlackHole  2
 #define BlockedOnRead       3
 #define BlockedOnWrite      4
@@ -231,6 +228,8 @@
 /* The thread is not on any run queues, but can be woken up
    by tryWakeupThread() */
 #define ThreadMigrating     13
+
+/* WARNING WARNING top number is BlockedOnMVarRead 14, not 13!! */
 
 /*
  * These constants are returned to the scheduler by a thread that has
@@ -276,25 +275,6 @@
  * stack may not need to be expanded.
  */
 #define TSO_SQUEEZED 128
-
-/* -----------------------------------------------------------------------------
-   RET_DYN stack frames
-   -------------------------------------------------------------------------- */
-
-/* VERY MAGIC CONSTANTS!
- * must agree with code in HeapStackCheck.c, stg_gen_chk, and
- * RESERVED_STACK_WORDS in Constants.h.
- */
-#define RET_DYN_BITMAP_SIZE 8
-#define RET_DYN_NONPTR_REGS_SIZE 10
-
-/* Sanity check that RESERVED_STACK_WORDS is reasonable.  We can't
- * just derive RESERVED_STACK_WORDS because it's used in Haskell code
- * too.
- */
-#if RESERVED_STACK_WORDS != (3 + RET_DYN_BITMAP_SIZE + RET_DYN_NONPTR_REGS_SIZE)
-#error RESERVED_STACK_WORDS may be wrong!
-#endif
 
 /*
  * The number of times we spin in a spin lock before yielding (see

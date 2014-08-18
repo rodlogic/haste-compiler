@@ -69,6 +69,7 @@ Executable haste-boot
         tar,
         bzlib,
         transformers,
+        directory,
         network,
         HTTP,
         shellmate >= 0.1.5

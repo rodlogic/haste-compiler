@@ -17,7 +17,6 @@
 --
 -----------------------------------------------------------------------------
 
--- #hide
 module GHC.Storable
         ( readWideCharOffPtr  
         , readIntOffPtr       
@@ -107,13 +106,10 @@ readInt32OffPtr (Ptr a) (I# i)
   = IO $ \s -> case readInt32OffAddr# a i s     of (# s2, x #) -> (# s2, I32# x #)
 readWord32OffPtr (Ptr a) (I# i)
   = IO $ \s -> case readWord32OffAddr# a i s    of (# s2, x #) -> (# s2, W32# x #)
-
--- Seriously, do we REALLY need these? (Short answer: nope!)
--- unsafeCoerce# away the problem until we can get rid of this, the primops are unimplemented anyway.
 readInt64OffPtr (Ptr a) (I# i)
-  = IO $ \s -> case readInt64OffAddr# a i s     of (# s2, x #) -> (# s2, I64# (unsafeCoerce# x) #)
+  = IO $ \s -> case readInt64OffAddr# a i s     of (# s2, x #) -> (# s2, I64# x #)
 readWord64OffPtr (Ptr a) (I# i)
-  = IO $ \s -> case readWord64OffAddr# a i s    of (# s2, x #) -> (# s2, W64# (unsafeCoerce# x) #)
+  = IO $ \s -> case readWord64OffAddr# a i s    of (# s2, x #) -> (# s2, W64# x #)
 
 writeWideCharOffPtr  :: Ptr Char          -> Int -> Char        -> IO ()
 writeIntOffPtr       :: Ptr Int           -> Int -> Int         -> IO ()
@@ -160,12 +156,9 @@ writeInt32OffPtr (Ptr a) (I# i) (I32# x)
   = IO $ \s -> case writeInt32OffAddr# a i x s     of s2 -> (# s2, () #)
 writeWord32OffPtr (Ptr a) (I# i) (W32# x)
   = IO $ \s -> case writeWord32OffAddr# a i x s    of s2 -> (# s2, () #)
-
--- Again, this doesn't make sense for JS, so unsafeCoerce# stuff to hell and back
--- until we can get rid of these things entirely.
 writeInt64OffPtr (Ptr a) (I# i) (I64# x)
-  = IO $ \s -> case writeInt64OffAddr# a i (unsafeCoerce# x) s     of s2 -> (# s2, () #)
+  = IO $ \s -> case writeInt64OffAddr# a i x s     of s2 -> (# s2, () #)
 writeWord64OffPtr (Ptr a) (I# i) (W64# x)
-  = IO $ \s -> case writeWord64OffAddr# a i (unsafeCoerce# x) s    of s2 -> (# s2, () #)
+  = IO $ \s -> case writeWord64OffAddr# a i x s    of s2 -> (# s2, () #)
 
 \end{code}

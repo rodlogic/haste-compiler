@@ -123,6 +123,7 @@ compiler cmdargs = do
         -- Handle dynamic GHC flags. Make sure __HASTE__ is #defined.
         let args = "-D__HASTE__" : map unLoc ghcargs'
             justDie = const $ liftIO exitFailure
+        liftIO $ logStr $ "ghcMode=" ++ (if usedGhcMode == OneShot then "OneShot" else "CompManager")
         dynflags <- getSessionDynFlags
         defaultCleanupHandler dynflags $ handleSourceError justDie $ do
           (dynflags', files, _) <- parseDynamicFlags dynflags (map noLoc args)

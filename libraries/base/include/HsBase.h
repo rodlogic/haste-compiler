@@ -9,11 +9,7 @@
 #ifndef __HSBASE_H__
 #define __HSBASE_H__
 
-#ifdef __NHC__
-# include "Nhc98BaseConfig.h"
-#else
 #include "HsBaseConfig.h"
-#endif
 
 /* ultra-evil... */
 #undef PACKAGE_BUGREPORT
@@ -65,6 +61,9 @@
 #if HAVE_UTIME_H
 #include <utime.h>
 #endif
+#if HAVE_SYS_UTSNAME_H
+#include <sys/utsname.h>
+#endif
 #if HAVE_GETTIMEOFDAY
 #  if HAVE_SYS_TIME_H
 #   include <sys/time.h>
@@ -81,8 +80,14 @@
 #if HAVE_SYS_TIMEB_H && !defined(__FreeBSD__)
 #include <sys/timeb.h>
 #endif
+#if HAVE_WINDOWS_H
+#include <windows.h>
+#endif
 #if HAVE_SYS_TIMES_H
 #include <sys/times.h>
+#endif
+#if HAVE_WINSOCK_H && defined(__MINGW32__)
+#include <winsock.h>
 #endif
 #if HAVE_LIMITS_H
 #include <limits.h>
@@ -121,6 +126,9 @@
 #endif
 
 /* For System */
+#if HAVE_SYS_WAIT_H
+#include <sys/wait.h>
+#endif
 #if HAVE_VFORK_H
 #include <vfork.h>
 #endif
@@ -129,6 +137,7 @@
 #if defined(__MINGW32__)
 /* in Win32Utils.c */
 extern void maperrno (void);
+extern int maperrno_func(DWORD dwErrorCode);
 extern HsWord64 getMonotonicUSec(void);
 #endif
 
@@ -139,8 +148,8 @@ extern HsWord64 getMonotonicUSec(void);
 #include <share.h>
 #endif
 
-#if HAVE_SYS_EVENT_H
-#include <sys/event.h>
+#if HAVE_SYS_SELECT_H
+#include <sys/select.h>
 #endif
 
 /* in inputReady.c */
@@ -295,10 +304,6 @@ __hscore_setmode( int fd, HsBool toBin )
   return 0;
 #endif
 }
-
-#if __GLASGOW_HASKELL__
-
-#endif /* __GLASGOW_HASKELL__ */
 
 #if defined(__MINGW32__)
 // We want the versions of stat/fstat/lseek that use 64-bit offsets,
@@ -528,15 +533,6 @@ INLINE int __hscore_open(char *file, int how, mode_t mode) {
 	return open(file,how,mode);
 }
 #endif
-
-#ifdef HAVE_KEVENT
-INLINE int __hscore_kevent(int kq, const struct kevent *changelist,
-                           size_t nchanges, struct kevent *eventlist,
-                           size_t nevents, const struct timespec *timeout) {
-	return kevent(kq, changelist, nchanges, eventlist, nevents, timeout);
-}
-#endif
-
 
 #if darwin_HOST_OS
 // You should not access _environ directly on Darwin in a bundle/shared library.

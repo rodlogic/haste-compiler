@@ -4,9 +4,6 @@
            , NoImplicitPrelude
            , MagicHash
            , UnboxedTuples
-           , ForeignFunctionInterface
-           , GHCForeignImportPrim
-           , UnliftedFFITypes
   #-}
 -- We believe we could deorphan this module, by moving lots of things
 -- around, but we haven't got there yet:
@@ -28,15 +25,13 @@
 --
 -----------------------------------------------------------------------------
 
--- #hide
+#include "ieee-flpt.h"
+
 module GHC.Float( module GHC.Float, Float(..), Double(..), Float#, Double#
                 , double2Int, int2Double, float2Int, int2Float )
     where
 
-#include "ieee-flpt.h"
-
 import Data.Maybe
-import GHC.HasteWordInt
 
 import Data.Bits
 import GHC.Base
@@ -50,8 +45,6 @@ import GHC.Float.RealFracMethods
 import GHC.Float.ConversionUtils
 import GHC.Integer.Logarithms ( integerLogBase# )
 import GHC.Integer.Logarithms.Internals
-import GHC.Integer (fromRat)
-import GHC.HastePrim
 
 infixr 8  **
 \end{code}
@@ -225,22 +218,33 @@ instance  Real Float  where
     toRational (F# x#)  =
         case decodeFloat_Int# x# of
           (# m#, e# #)
-            | e# >=# 0#                                 ->
+            | isTrue# (e# >=# 0#)                               ->
                     (smallInteger m# `shiftLInteger` e#) :% 1
-            | (i2w m# `and#` 1##) `eqWord#` 0##   ->
+            | isTrue# ((int2Word# m# `and#` 1##) `eqWord#` 0##) ->
                     case elimZerosInt# m# (negateInt# e#) of
                       (# n, d# #) -> n :% shiftLInteger 1 d#
-            | otherwise                                 ->
+            | otherwise                                         ->
                     smallInteger m# :% shiftLInteger 1 (negateInt# e#)
 
 instance  Fractional Float  where
     (/) x y             =  divideFloat x y
-    fromRational (n:%0)
-        | n == 0        = 0/0
-        | n < 0         = (-1)/0
-        | otherwise     = 1/0
-    fromRational (n:%d) = unsafeCoerce# (fromRat n d)
+    {-# INLINE fromRational #-}
+    fromRational (n:%d) = rationalToFloat n d
     recip x             =  1.0 / x
+
+rationalToFloat :: Integer -> Integer -> Float
+{-# NOINLINE [1] rationalToFloat #-}
+rationalToFloat n 0
+    | n == 0        = 0/0
+    | n < 0         = (-1)/0
+    | otherwise     = 1/0
+rationalToFloat n d
+    | n == 0        = encodeFloat 0 0
+    | n < 0         = -(fromRat'' minEx mantDigs (-n) d)
+    | otherwise     = fromRat'' minEx mantDigs n d
+      where
+        minEx       = FLT_MIN_EXP
+        mantDigs    = FLT_MANT_DIG
 
 -- RULES for Integer and Int
 {-# RULES
@@ -350,7 +354,7 @@ instance  RealFloat Float  where
     isIEEE _         = True
 
 instance  Show Float  where
-    showsPrec x = showSignedFloat (\f -> (jsShowF f ++)) x
+    showsPrec   x = showSignedFloat showFloat x
     showList = showList__ (showsPrec 0)
 \end{code}
 
@@ -380,22 +384,33 @@ instance  Real Double  where
     toRational (D# x#)  =
         case decodeDoubleInteger x# of
           (# m, e# #)
-            | e# >=# 0#                                     ->
+            | isTrue# (e# >=# 0#)                                  ->
                 shiftLInteger m e# :% 1
-            | (integerToWord m `and#` 1##) `eqWord#` 0##    ->
+            | isTrue# ((integerToWord m `and#` 1##) `eqWord#` 0##) ->
                 case elimZerosInteger m (negateInt# e#) of
                     (# n, d# #) ->  n :% shiftLInteger 1 d#
-            | otherwise                                     ->
+            | otherwise                                            ->
                 m :% shiftLInteger 1 (negateInt# e#)
 
 instance  Fractional Double  where
     (/) x y             =  divideDouble x y
-    fromRational (n:%0)
-        | n == 0        = 0/0
-        | n < 0         = (-1)/0
-        | otherwise     = 1/0
-    fromRational (n:%d) = fromRat n d
+    {-# INLINE fromRational #-}
+    fromRational (n:%d) = rationalToDouble n d
     recip x             =  1.0 / x
+
+rationalToDouble :: Integer -> Integer -> Double
+{-# NOINLINE [1] rationalToDouble #-}
+rationalToDouble n 0
+    | n == 0        = 0/0
+    | n < 0         = (-1)/0
+    | otherwise     = 1/0
+rationalToDouble n d
+    | n == 0        = encodeFloat 0 0
+    | n < 0         = -(fromRat'' minEx mantDigs (-n) d)
+    | otherwise     = fromRat'' minEx mantDigs n d
+      where
+        minEx       = DBL_MIN_EXP
+        mantDigs    = DBL_MANT_DIG
 
 instance  Floating Double  where
     pi                  =  3.141592653589793238
@@ -499,7 +514,7 @@ instance  RealFloat Double  where
     isIEEE _            = True
 
 instance  Show Double  where
-    showsPrec   x = showSignedFloat (\f -> (jsShowD f ++)) x
+    showsPrec   x = showSignedFloat showFloat x
     showList = showList__ (showsPrec 0)
 \end{code}
 
@@ -553,12 +568,24 @@ instance  Enum Double  where
 
 
 \begin{code}
+-- | Show a signed 'RealFloat' value to full precision
+-- using standard decimal notation for arguments whose absolute value lies
+-- between @0.1@ and @9,999,999@, and scientific notation otherwise.
+showFloat :: (RealFloat a) => a -> ShowS
+showFloat x  =  showString (formatRealFloat FFGeneric Nothing x)
+
 -- These are the format types.  This type is not exported.
 
 data FFFormat = FFExponent | FFFixed | FFGeneric
 
+-- This is just a compatibility stub, as the "alt" argument formerly
+-- didn't exist.
 formatRealFloat :: (RealFloat a) => FFFormat -> Maybe Int -> a -> String
-formatRealFloat fmt decs x
+formatRealFloat fmt decs x = formatRealFloatAlt fmt decs False x
+
+formatRealFloatAlt :: (RealFloat a) => FFFormat -> Maybe Int -> Bool -> a
+                 -> String
+formatRealFloatAlt fmt decs alt x
    | isNaN x                   = "NaN"
    | isInfinite x              = if x < 0 then "-Infinity" else "Infinity"
    | x < 0 || isNegativeZero x = '-':doFmt fmt (floatToDigits (toInteger base) (-x))
@@ -612,13 +639,14 @@ formatRealFloat fmt decs x
           (ei,is') = roundTo base (dec' + e) is
           (ls,rs)  = splitAt (e+ei) (map intToDigit is')
          in
-         mk0 ls ++ (if null rs then "" else '.':rs)
+         mk0 ls ++ (if null rs && not alt then "" else '.':rs)
         else
          let
           (ei,is') = roundTo base dec' (replicate (-e) 0 ++ is)
           d:ds' = map intToDigit (if ei > 0 then is' else 0:is')
          in
-         d : (if null ds' then "" else '.':ds')
+         d : (if null ds' && not alt then "" else '.':ds')
+
 
 roundTo :: Int -> Int -> [Int] -> (Int,[Int])
 roundTo base d is =
@@ -806,6 +834,49 @@ fromRat x = x'
 Now, here's Lennart's code (which works)
 
 \begin{code}
+-- | Converts a 'Rational' value into any type in class 'RealFloat'.
+{-# RULES
+"fromRat/Float"     fromRat = (fromRational :: Rational -> Float)
+"fromRat/Double"    fromRat = (fromRational :: Rational -> Double)
+  #-}
+
+{-# NOINLINE [1] fromRat #-}
+fromRat :: (RealFloat a) => Rational -> a
+
+-- Deal with special cases first, delegating the real work to fromRat'
+fromRat (n :% 0) | n > 0     =  1/0        -- +Infinity
+                 | n < 0     = -1/0        -- -Infinity
+                 | otherwise =  0/0        -- NaN
+
+fromRat (n :% d) | n > 0     = fromRat' (n :% d)
+                 | n < 0     = - fromRat' ((-n) :% d)
+                 | otherwise = encodeFloat 0 0             -- Zero
+
+-- Conversion process:
+-- Scale the rational number by the RealFloat base until
+-- it lies in the range of the mantissa (as used by decodeFloat/encodeFloat).
+-- Then round the rational to an Integer and encode it with the exponent
+-- that we got from the scaling.
+-- To speed up the scaling process we compute the log2 of the number to get
+-- a first guess of the exponent.
+
+fromRat' :: (RealFloat a) => Rational -> a
+-- Invariant: argument is strictly positive
+fromRat' x = r
+  where b = floatRadix r
+        p = floatDigits r
+        (minExp0, _) = floatRange r
+        minExp = minExp0 - p            -- the real minimum exponent
+        xMax   = toRational (expt b p)
+        p0 = (integerLogBase b (numerator x) - integerLogBase b (denominator x) - p) `max` minExp
+        -- if x = n/d and ln = integerLogBase b n, ld = integerLogBase b d,
+        -- then b^(ln-ld-1) < x < b^(ln-ld+1)
+        f = if p0 < 0 then 1 :% expt b (-p0) else expt b p0 :% 1
+        x0 = x / f
+        -- if ln - ld >= minExp0, then b^(p-1) < x0 < b^(p+1), so there's at most
+        -- one scaling step needed, otherwise, x0 < b^p and no scaling is needed
+        (x', p') = if x0 >= xMax then (x0 / toRational b, p0+1) else (x0, p0)
+        r = encodeFloat (round x') p'
 
 -- Exponentiation with a cache for the most common numbers.
 minExpt, maxExpt :: Int
@@ -858,6 +929,75 @@ The below is an adaption of fromRat' for the conversion to
 Float or Double exploiting the known floatRadix and avoiding
 divisions as much as possible.
 
+\begin{code}
+{-# SPECIALISE fromRat'' :: Int -> Int -> Integer -> Integer -> Float,
+                            Int -> Int -> Integer -> Integer -> Double #-}
+fromRat'' :: RealFloat a => Int -> Int -> Integer -> Integer -> a
+-- Invariant: n and d strictly positive
+fromRat'' minEx@(I# me#) mantDigs@(I# md#) n d =
+    case integerLog2IsPowerOf2# d of
+      (# ld#, pw# #)
+        | isTrue# (pw# ==# 0#) ->
+          case integerLog2# n of
+            ln# | isTrue# (ln# >=# (ld# +# me# -# 1#)) ->
+                  -- this means n/d >= 2^(minEx-1), i.e. we are guaranteed to get
+                  -- a normalised number, round to mantDigs bits
+                  if isTrue# (ln# <# md#)
+                    then encodeFloat n (I# (negateInt# ld#))
+                    else let n'  = n `shiftR` (I# (ln# +# 1# -# md#))
+                             n'' = case roundingMode# n (ln# -# md#) of
+                                    0# -> n'
+                                    2# -> n' + 1
+                                    _  -> case fromInteger n' .&. (1 :: Int) of
+                                            0 -> n'
+                                            _ -> n' + 1
+                         in encodeFloat n'' (I# (ln# -# ld# +# 1# -# md#))
+                | otherwise ->
+                  -- n/d < 2^(minEx-1), a denorm or rounded to 2^(minEx-1)
+                  -- the exponent for encoding is always minEx-mantDigs
+                  -- so we must shift right by (minEx-mantDigs) - (-ld)
+                  case ld# +# (me# -# md#) of
+                    ld'# | isTrue# (ld'# <=# 0#) -> -- we would shift left, so we don't shift
+                           encodeFloat n (I# ((me# -# md#) -# ld'#))
+                         | isTrue# (ld'# <=# ln#) ->
+                           let n' = n `shiftR` (I# ld'#)
+                           in case roundingMode# n (ld'# -# 1#) of
+                                0# -> encodeFloat n' (minEx - mantDigs)
+                                1# -> if fromInteger n' .&. (1 :: Int) == 0
+                                        then encodeFloat n' (minEx-mantDigs)
+                                        else encodeFloat (n' + 1) (minEx-mantDigs)
+                                _  -> encodeFloat (n' + 1) (minEx-mantDigs)
+                         | isTrue# (ld'# ># (ln# +# 1#)) -> encodeFloat 0 0 -- result of shift < 0.5
+                         | otherwise ->  -- first bit of n shifted to 0.5 place
+                           case integerLog2IsPowerOf2# n of
+                            (# _, 0# #) -> encodeFloat 0 0  -- round to even
+                            (# _, _ #)  -> encodeFloat 1 (minEx - mantDigs)
+        | otherwise ->
+          let ln = I# (integerLog2# n)
+              ld = I# ld#
+              -- 2^(ln-ld-1) < n/d < 2^(ln-ld+1)
+              p0 = max minEx (ln - ld)
+              (n', d')
+                | p0 < mantDigs = (n `shiftL` (mantDigs - p0), d)
+                | p0 == mantDigs = (n, d)
+                | otherwise     = (n, d `shiftL` (p0 - mantDigs))
+              -- if ln-ld < minEx, then n'/d' < 2^mantDigs, else
+              -- 2^(mantDigs-1) < n'/d' < 2^(mantDigs+1) and we
+              -- may need one scaling step
+              scale p a b
+                | (b `shiftL` mantDigs) <= a = (p+1, a, b `shiftL` 1)
+                | otherwise = (p, a, b)
+              (p', n'', d'') = scale (p0-mantDigs) n' d'
+              -- n''/d'' < 2^mantDigs and p' == minEx-mantDigs or n''/d'' >= 2^(mantDigs-1)
+              rdq = case n'' `quotRem` d'' of
+                     (q,r) -> case compare (r `shiftL` 1) d'' of
+                                LT -> q
+                                EQ -> if fromInteger q .&. (1 :: Int) == 0
+                                        then q else q+1
+                                GT -> q+1
+          in  encodeFloat rdq p'
+\end{code}
+
 
 %*********************************************************
 %*                                                      *
@@ -879,12 +1019,12 @@ negateFloat :: Float -> Float
 negateFloat (F# x)        = F# (negateFloat# x)
 
 gtFloat, geFloat, eqFloat, neFloat, ltFloat, leFloat :: Float -> Float -> Bool
-gtFloat     (F# x) (F# y) = gtFloat# x y
-geFloat     (F# x) (F# y) = geFloat# x y
-eqFloat     (F# x) (F# y) = eqFloat# x y
-neFloat     (F# x) (F# y) = neFloat# x y
-ltFloat     (F# x) (F# y) = ltFloat# x y
-leFloat     (F# x) (F# y) = leFloat# x y
+gtFloat     (F# x) (F# y) = isTrue# (gtFloat# x y)
+geFloat     (F# x) (F# y) = isTrue# (geFloat# x y)
+eqFloat     (F# x) (F# y) = isTrue# (eqFloat# x y)
+neFloat     (F# x) (F# y) = isTrue# (neFloat# x y)
+ltFloat     (F# x) (F# y) = isTrue# (ltFloat# x y)
+leFloat     (F# x) (F# y) = isTrue# (leFloat# x y)
 
 expFloat, logFloat, sqrtFloat :: Float -> Float
 sinFloat, cosFloat, tanFloat  :: Float -> Float
@@ -919,12 +1059,12 @@ negateDouble :: Double -> Double
 negateDouble (D# x)        = D# (negateDouble# x)
 
 gtDouble, geDouble, eqDouble, neDouble, leDouble, ltDouble :: Double -> Double -> Bool
-gtDouble    (D# x) (D# y) = x >## y
-geDouble    (D# x) (D# y) = x >=## y
-eqDouble    (D# x) (D# y) = x ==## y
-neDouble    (D# x) (D# y) = x /=## y
-ltDouble    (D# x) (D# y) = x <## y
-leDouble    (D# x) (D# y) = x <=## y
+gtDouble    (D# x) (D# y) = isTrue# (x >##  y)
+geDouble    (D# x) (D# y) = isTrue# (x >=## y)
+eqDouble    (D# x) (D# y) = isTrue# (x ==## y)
+neDouble    (D# x) (D# y) = isTrue# (x /=## y)
+ltDouble    (D# x) (D# y) = isTrue# (x <##  y)
+leDouble    (D# x) (D# y) = isTrue# (x <=## y)
 
 double2Float :: Double -> Float
 double2Float (D# x) = F# (double2Float# x)
@@ -974,17 +1114,24 @@ foreign import ccall unsafe "isDoubleFinite" isDoubleFinite :: Double -> Int
 %*********************************************************
 
 \begin{code}
--- In Haste, all of these share the same representation, so unless we're
--- converting a decimal type to an integer type, it's just a type coercion!
+
+word2Double :: Word -> Double
+word2Double (W# w) = D# (word2Double# w)
+
+word2Float :: Word -> Float
+word2Float (W# w) = F# (word2Float# w)
+
 {-# RULES
-"fromIntegral/Int->Float"   fromIntegral = unsafeCoerce#
-"fromIntegral/Int->Double"  fromIntegral = unsafeCoerce#
+"fromIntegral/Int->Float"   fromIntegral = int2Float
+"fromIntegral/Int->Double"  fromIntegral = int2Double
+"fromIntegral/Word->Float"  fromIntegral = word2Float
+"fromIntegral/Word->Double" fromIntegral = word2Double
 "realToFrac/Float->Float"   realToFrac   = id :: Float -> Float
-"realToFrac/Float->Double"  realToFrac   = unsafeCoerce#
-"realToFrac/Double->Float"  realToFrac   = unsafeCoerce#
+"realToFrac/Float->Double"  realToFrac   = float2Double
+"realToFrac/Double->Float"  realToFrac   = double2Float
 "realToFrac/Double->Double" realToFrac   = id :: Double -> Double
-"realToFrac/Int->Double"    realToFrac   = unsafeCoerce#	-- See Note [realToFrac int-to-float]
-"realToFrac/Int->Float"     realToFrac   = unsafeCoerce#	-- 	..ditto
+"realToFrac/Int->Double"    realToFrac   = int2Double	-- See Note [realToFrac int-to-float]
+"realToFrac/Int->Float"     realToFrac   = int2Float	-- 	..ditto
     #-}
 \end{code}
 
@@ -1041,10 +1188,6 @@ showSignedFloat showPos p x
    | x < 0 || isNegativeZero x
        = showParen (p > 6) (showChar '-' . showPos (-x))
    | otherwise = showPos x
-
-showFloat :: RealFloat a => a -> ShowS
-showFloat f str = (jsShowD . realToFrac) f ++ str
-
 \end{code}
 
 We need to prevent over/underflow of the exponent in encodeFloat when

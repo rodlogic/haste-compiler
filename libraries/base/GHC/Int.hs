@@ -1,6 +1,6 @@
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE CPP, NoImplicitPrelude, BangPatterns, MagicHash, UnboxedTuples,
-             StandaloneDeriving #-}
+             StandaloneDeriving, DeriveDataTypeable, NegativeLiterals #-}
 {-# OPTIONS_HADDOCK hide #-}
 
 -----------------------------------------------------------------------------
@@ -19,29 +19,28 @@
 
 #include "MachDeps.h"
 
--- #hide
 module GHC.Int (
         Int8(..), Int16(..), Int32(..), Int64(..),
         uncheckedIShiftL64#, uncheckedIShiftRA64#
     ) where
 
 import Data.Bits
+import Data.Maybe
 
 #if WORD_SIZE_IN_BITS < 64
 import GHC.IntWord64
 #endif
 
-import GHC.HasteWordInt
 import GHC.Base
 import GHC.Enum
 import GHC.Num
 import GHC.Real
 import GHC.Read
 import GHC.Arr
-import GHC.Err
 import GHC.Word hiding (uncheckedShiftL64#, uncheckedShiftRL64#)
 import GHC.Show
 import GHC.Float ()     -- for RealFrac methods
+import Data.Typeable
 
 
 ------------------------------------------------------------------------
@@ -51,11 +50,7 @@ import GHC.Float ()     -- for RealFrac methods
 -- Int8 is represented in the same way as Int. Operations may assume
 -- and must ensure that it holds only values from its logical range.
 
-#if __GLASGOW_HASKELL__ >= 706
-data {-# CTYPE "HsInt8" #-} Int8 = I8# Int# deriving (Eq, Ord)
-#else
-data Int8 = I8# Int# deriving (Eq, Ord)
-#endif
+data {-# CTYPE "HsInt8" #-} Int8 = I8# Int# deriving (Eq, Ord, Typeable)
 -- ^ 8-bit signed integer type
 
 instance Show Int8 where
@@ -141,31 +136,35 @@ instance Bits Int8 where
     {-# INLINE bit #-}
     {-# INLINE testBit #-}
 
-    (I8# x#) .&.   (I8# y#)   = I8# (w2i (i2w x# `and#` i2w y#))
-    (I8# x#) .|.   (I8# y#)   = I8# (w2i (i2w x# `or#`  i2w y#))
-    (I8# x#) `xor` (I8# y#)   = I8# (w2i (i2w x# `xor#` i2w y#))
-    complement (I8# x#)       = I8# (w2i (i2w x# `xor#` i2w (-1#)))
+    (I8# x#) .&.   (I8# y#)   = I8# (word2Int# (int2Word# x# `and#` int2Word# y#))
+    (I8# x#) .|.   (I8# y#)   = I8# (word2Int# (int2Word# x# `or#`  int2Word# y#))
+    (I8# x#) `xor` (I8# y#)   = I8# (word2Int# (int2Word# x# `xor#` int2Word# y#))
+    complement (I8# x#)       = I8# (word2Int# (not# (int2Word# x#)))
     (I8# x#) `shift` (I# i#)
-        | i# >=# 0#           = I8# (narrow8Int# (x# `iShiftL#` i#))
+        | isTrue# (i# >=# 0#) = I8# (narrow8Int# (x# `iShiftL#` i#))
         | otherwise           = I8# (x# `iShiftRA#` negateInt# i#)
-    (I8# x#) `shiftL` (I# i#) = I8# (narrow8Int# (x# `iShiftL#` i#))
+    (I8# x#) `shiftL`       (I# i#) = I8# (narrow8Int# (x# `iShiftL#` i#))
     (I8# x#) `unsafeShiftL` (I# i#) = I8# (narrow8Int# (x# `uncheckedIShiftL#` i#))
-    (I8# x#) `shiftR` (I# i#) = I8# (x# `iShiftRA#` i#)
+    (I8# x#) `shiftR`       (I# i#) = I8# (x# `iShiftRA#` i#)
     (I8# x#) `unsafeShiftR` (I# i#) = I8# (x# `uncheckedIShiftRA#` i#)
     (I8# x#) `rotate` (I# i#)
-        | i'# ==# 0#
+        | isTrue# (i'# ==# 0#)
         = I8# x#
         | otherwise
-        = I8# (narrow8Int# (w2i ((x'# `uncheckedShiftL#` i'#) `or#`
+        = I8# (narrow8Int# (word2Int# ((x'# `uncheckedShiftL#` i'#) `or#`
                                        (x'# `uncheckedShiftRL#` (8# -# i'#)))))
         where
-        !x'# = narrow8Word# (i2w x#)
-        !i'# = w2i (i2w i# `and#` 7##)
-    bitSize  _                = 8
+        !x'# = narrow8Word# (int2Word# x#)
+        !i'# = word2Int# (int2Word# i# `and#` 7##)
+    bitSizeMaybe i            = Just (finiteBitSize i)
+    bitSize i                 = finiteBitSize i
     isSigned _                = True
-    popCount (I8# x#)         = I# (w2i (popCnt8# (i2w x#)))
+    popCount (I8# x#)         = I# (word2Int# (popCnt8# (int2Word# x#)))
     bit                       = bitDefault
     testBit                   = testBitDefault
+
+instance FiniteBits Int8 where
+    finiteBitSize _ = 8
 
 {-# RULES
 "fromIntegral/Int8->Int8" fromIntegral = id :: Int8 -> Int8
@@ -175,32 +174,32 @@ instance Bits Int8 where
 
 {-# RULES
 "properFraction/Float->(Int8,Float)"
-    forall x. properFraction (x :: Float) =
+    properFraction = \x ->
                       case properFraction x of {
-                        (n, y) -> ((fromIntegral :: Int -> Int8) n, y) }
+                        (n, y) -> ((fromIntegral :: Int -> Int8) n, y :: Float) }
 "truncate/Float->Int8"
-    forall x. truncate (x :: Float) = (fromIntegral :: Int -> Int8) (truncate x)
+    truncate = (fromIntegral :: Int -> Int8) . (truncate :: Float -> Int)
 "floor/Float->Int8"
-    forall x. floor    (x :: Float) = (fromIntegral :: Int -> Int8) (floor x)
+    floor    = (fromIntegral :: Int -> Int8) . (floor :: Float -> Int)
 "ceiling/Float->Int8"
-    forall x. ceiling  (x :: Float) = (fromIntegral :: Int -> Int8) (ceiling x)
+    ceiling  = (fromIntegral :: Int -> Int8) . (ceiling :: Float -> Int)
 "round/Float->Int8"
-    forall x. round    (x :: Float) = (fromIntegral :: Int -> Int8) (round x)
+    round    = (fromIntegral :: Int -> Int8) . (round  :: Float -> Int)
   #-}
 
 {-# RULES
 "properFraction/Double->(Int8,Double)"
-    forall x. properFraction (x :: Double) =
+    properFraction = \x ->
                       case properFraction x of {
-                        (n, y) -> ((fromIntegral :: Int -> Int8) n, y) }
+                        (n, y) -> ((fromIntegral :: Int -> Int8) n, y :: Double) }
 "truncate/Double->Int8"
-    forall x. truncate (x :: Double) = (fromIntegral :: Int -> Int8) (truncate x)
+    truncate = (fromIntegral :: Int -> Int8) . (truncate :: Double -> Int)
 "floor/Double->Int8"
-    forall x. floor    (x :: Double) = (fromIntegral :: Int -> Int8) (floor x)
+    floor    = (fromIntegral :: Int -> Int8) . (floor :: Double -> Int)
 "ceiling/Double->Int8"
-    forall x. ceiling  (x :: Double) = (fromIntegral :: Int -> Int8) (ceiling x)
+    ceiling  = (fromIntegral :: Int -> Int8) . (ceiling :: Double -> Int)
 "round/Double->Int8"
-    forall x. round    (x :: Double) = (fromIntegral :: Int -> Int8) (round x)
+    round    = (fromIntegral :: Int -> Int8) . (round  :: Double -> Int)
   #-}
 
 ------------------------------------------------------------------------
@@ -210,11 +209,7 @@ instance Bits Int8 where
 -- Int16 is represented in the same way as Int. Operations may assume
 -- and must ensure that it holds only values from its logical range.
 
-#if __GLASGOW_HASKELL__ >= 706
-data {-# CTYPE "HsInt16" #-} Int16 = I16# Int# deriving (Eq, Ord)
-#else
-data Int16 = I16# Int# deriving (Eq, Ord)
-#endif
+data {-# CTYPE "HsInt16" #-} Int16 = I16# Int# deriving (Eq, Ord, Typeable)
 -- ^ 16-bit signed integer type
 
 instance Show Int16 where
@@ -300,34 +295,38 @@ instance Bits Int16 where
     {-# INLINE bit #-}
     {-# INLINE testBit #-}
 
-    (I16# x#) .&.   (I16# y#)  = I16# (w2i (i2w x# `and#` i2w y#))
-    (I16# x#) .|.   (I16# y#)  = I16# (w2i (i2w x# `or#`  i2w y#))
-    (I16# x#) `xor` (I16# y#)  = I16# (w2i (i2w x# `xor#` i2w y#))
-    complement (I16# x#)       = I16# (w2i (i2w x# `xor#` i2w (-1#)))
+    (I16# x#) .&.   (I16# y#)  = I16# (word2Int# (int2Word# x# `and#` int2Word# y#))
+    (I16# x#) .|.   (I16# y#)  = I16# (word2Int# (int2Word# x# `or#`  int2Word# y#))
+    (I16# x#) `xor` (I16# y#)  = I16# (word2Int# (int2Word# x# `xor#` int2Word# y#))
+    complement (I16# x#)       = I16# (word2Int# (not# (int2Word# x#)))
     (I16# x#) `shift` (I# i#)
-        | i# >=# 0#            = I16# (narrow16Int# (x# `iShiftL#` i#))
+        | isTrue# (i# >=# 0#)  = I16# (narrow16Int# (x# `iShiftL#` i#))
         | otherwise            = I16# (x# `iShiftRA#` negateInt# i#)
-    (I16# x#) `shiftL` (I# i#) = I16# (narrow16Int# (x# `iShiftL#` i#))
+    (I16# x#) `shiftL`       (I# i#) = I16# (narrow16Int# (x# `iShiftL#` i#))
     (I16# x#) `unsafeShiftL` (I# i#) = I16# (narrow16Int# (x# `uncheckedIShiftL#` i#))
-    (I16# x#) `shiftR` (I# i#) = I16# (x# `iShiftRA#` i#)
+    (I16# x#) `shiftR`       (I# i#) = I16# (x# `iShiftRA#` i#)
     (I16# x#) `unsafeShiftR` (I# i#) = I16# (x# `uncheckedIShiftRA#` i#)
     (I16# x#) `rotate` (I# i#)
-        | i'# ==# 0#
+        | isTrue# (i'# ==# 0#)
         = I16# x#
         | otherwise
-        = I16# (narrow16Int# (w2i ((x'# `uncheckedShiftL#` i'#) `or#`
+        = I16# (narrow16Int# (word2Int# ((x'# `uncheckedShiftL#` i'#) `or#`
                                          (x'# `uncheckedShiftRL#` (16# -# i'#)))))
         where
-        !x'# = narrow16Word# (i2w x#)
-        !i'# = w2i (i2w i# `and#` 15##)
-    bitSize  _                 = 16
+        !x'# = narrow16Word# (int2Word# x#)
+        !i'# = word2Int# (int2Word# i# `and#` 15##)
+    bitSizeMaybe i             = Just (finiteBitSize i)
+    bitSize i                  = finiteBitSize i
     isSigned _                 = True
-    popCount (I16# x#)         = I# (w2i (popCnt16# (i2w x#)))
+    popCount (I16# x#)         = I# (word2Int# (popCnt16# (int2Word# x#)))
     bit                        = bitDefault
     testBit                    = testBitDefault
 
+instance FiniteBits Int16 where
+    finiteBitSize _ = 16
+
 {-# RULES
-"fromIntegral/Word8->Int16"  fromIntegral = \(W8# x#) -> I16# (w2i x#)
+"fromIntegral/Word8->Int16"  fromIntegral = \(W8# x#) -> I16# (word2Int# x#)
 "fromIntegral/Int8->Int16"   fromIntegral = \(I8# x#) -> I16# x#
 "fromIntegral/Int16->Int16"  fromIntegral = id :: Int16 -> Int16
 "fromIntegral/a->Int16"      fromIntegral = \x -> case fromIntegral x of I# x# -> I16# (narrow16Int# x#)
@@ -336,32 +335,32 @@ instance Bits Int16 where
 
 {-# RULES
 "properFraction/Float->(Int16,Float)"
-    forall x. properFraction (x :: Float) =
+    properFraction = \x ->
                       case properFraction x of {
-                        (n, y) -> ((fromIntegral :: Int -> Int16) n, y) }
+                        (n, y) -> ((fromIntegral :: Int -> Int16) n, y :: Float) }
 "truncate/Float->Int16"
-    forall x. truncate (x :: Float) = (fromIntegral :: Int -> Int16) (truncate x)
+    truncate = (fromIntegral :: Int -> Int16) . (truncate :: Float -> Int)
 "floor/Float->Int16"
-    forall x. floor    (x :: Float) = (fromIntegral :: Int -> Int16) (floor x)
+    floor    = (fromIntegral :: Int -> Int16) . (floor :: Float -> Int)
 "ceiling/Float->Int16"
-    forall x. ceiling  (x :: Float) = (fromIntegral :: Int -> Int16) (ceiling x)
+    ceiling  = (fromIntegral :: Int -> Int16) . (ceiling :: Float -> Int)
 "round/Float->Int16"
-    forall x. round    (x :: Float) = (fromIntegral :: Int -> Int16) (round x)
+    round    = (fromIntegral :: Int -> Int16) . (round  :: Float -> Int)
   #-}
 
 {-# RULES
 "properFraction/Double->(Int16,Double)"
-    forall x. properFraction (x :: Double) =
+    properFraction = \x ->
                       case properFraction x of {
-                        (n, y) -> ((fromIntegral :: Int -> Int16) n, y) }
+                        (n, y) -> ((fromIntegral :: Int -> Int16) n, y :: Double) }
 "truncate/Double->Int16"
-    forall x. truncate (x :: Double) = (fromIntegral :: Int -> Int16) (truncate x)
+    truncate = (fromIntegral :: Int -> Int16) . (truncate :: Double -> Int)
 "floor/Double->Int16"
-    forall x. floor    (x :: Double) = (fromIntegral :: Int -> Int16) (floor x)
+    floor    = (fromIntegral :: Int -> Int16) . (floor :: Double -> Int)
 "ceiling/Double->Int16"
-    forall x. ceiling  (x :: Double) = (fromIntegral :: Int -> Int16) (ceiling x)
+    ceiling  = (fromIntegral :: Int -> Int16) . (ceiling :: Double -> Int)
 "round/Double->Int16"
-    forall x. round    (x :: Double) = (fromIntegral :: Int -> Int16) (round x)
+    round    = (fromIntegral :: Int -> Int16) . (round  :: Double -> Int)
   #-}
 
 ------------------------------------------------------------------------
@@ -369,12 +368,12 @@ instance Bits Int16 where
 ------------------------------------------------------------------------
 
 -- Int32 is represented in the same way as Int.
-
-#if __GLASGOW_HASKELL__ >= 706
-data {-# CTYPE "HsInt32" #-} Int32 = I32# Int# deriving (Eq, Ord)
-#else
-data Int32 = I32# Int# deriving (Eq, Ord)
+#if WORD_SIZE_IN_BITS > 32
+-- Operations may assume and must ensure that it holds only values
+-- from its logical range.
 #endif
+
+data {-# CTYPE "HsInt32" #-} Int32 = I32# Int# deriving (Eq, Ord, Typeable)
 -- ^ 32-bit signed integer type
 
 instance Show Int32 where
@@ -460,36 +459,40 @@ instance Bits Int32 where
     {-# INLINE bit #-}
     {-# INLINE testBit #-}
 
-    (I32# x#) .&.   (I32# y#)  = I32# (w2i (i2w x# `and#` i2w y#))
-    (I32# x#) .|.   (I32# y#)  = I32# (w2i (i2w x# `or#`  i2w y#))
-    (I32# x#) `xor` (I32# y#)  = I32# (w2i (i2w x# `xor#` i2w y#))
-    complement (I32# x#)       = I32# (w2i (i2w x# `xor#` i2w (-1#)))
+    (I32# x#) .&.   (I32# y#)  = I32# (word2Int# (int2Word# x# `and#` int2Word# y#))
+    (I32# x#) .|.   (I32# y#)  = I32# (word2Int# (int2Word# x# `or#`  int2Word# y#))
+    (I32# x#) `xor` (I32# y#)  = I32# (word2Int# (int2Word# x# `xor#` int2Word# y#))
+    complement (I32# x#)       = I32# (word2Int# (not# (int2Word# x#)))
     (I32# x#) `shift` (I# i#)
-        | i# >=# 0#            = I32# (narrow32Int# (x# `iShiftL#` i#))
+        | isTrue# (i# >=# 0#)  = I32# (narrow32Int# (x# `iShiftL#` i#))
         | otherwise            = I32# (x# `iShiftRA#` negateInt# i#)
-    (I32# x#) `shiftL` (I# i#) = I32# (narrow32Int# (x# `iShiftL#` i#))
+    (I32# x#) `shiftL`       (I# i#) = I32# (narrow32Int# (x# `iShiftL#` i#))
     (I32# x#) `unsafeShiftL` (I# i#) =
         I32# (narrow32Int# (x# `uncheckedIShiftL#` i#))
-    (I32# x#) `shiftR` (I# i#) = I32# (x# `iShiftRA#` i#)
+    (I32# x#) `shiftR`       (I# i#) = I32# (x# `iShiftRA#` i#)
     (I32# x#) `unsafeShiftR` (I# i#) = I32# (x# `uncheckedIShiftRA#` i#)
     (I32# x#) `rotate` (I# i#)
-        | i'# ==# 0#
+        | isTrue# (i'# ==# 0#)
         = I32# x#
         | otherwise
-        = I32# (narrow32Int# (w2i ((x'# `uncheckedShiftL#` i'#) `or#`
+        = I32# (narrow32Int# (word2Int# ((x'# `uncheckedShiftL#` i'#) `or#`
                                          (x'# `uncheckedShiftRL#` (32# -# i'#)))))
         where
-        !x'# = narrow32Word# (i2w x#)
-        !i'# = w2i (i2w i# `and#` 31##)
-    bitSize  _                 = 32
+        !x'# = narrow32Word# (int2Word# x#)
+        !i'# = word2Int# (int2Word# i# `and#` 31##)
+    bitSizeMaybe i             = Just (finiteBitSize i)
+    bitSize i                  = finiteBitSize i
     isSigned _                 = True
-    popCount (I32# x#)         = I# (w2i (popCnt32# (i2w x#)))
+    popCount (I32# x#)         = I# (word2Int# (popCnt32# (int2Word# x#)))
     bit                        = bitDefault
     testBit                    = testBitDefault
 
+instance FiniteBits Int32 where
+    finiteBitSize _ = 32
+
 {-# RULES
-"fromIntegral/Word8->Int32"  fromIntegral = \(W8# x#) -> I32# (w2i x#)
-"fromIntegral/Word16->Int32" fromIntegral = \(W16# x#) -> I32# (w2i x#)
+"fromIntegral/Word8->Int32"  fromIntegral = \(W8# x#) -> I32# (word2Int# x#)
+"fromIntegral/Word16->Int32" fromIntegral = \(W16# x#) -> I32# (word2Int# x#)
 "fromIntegral/Int8->Int32"   fromIntegral = \(I8# x#) -> I32# x#
 "fromIntegral/Int16->Int32"  fromIntegral = \(I16# x#) -> I32# x#
 "fromIntegral/Int32->Int32"  fromIntegral = id :: Int32 -> Int32
@@ -499,32 +502,32 @@ instance Bits Int32 where
 
 {-# RULES
 "properFraction/Float->(Int32,Float)"
-    forall x. properFraction (x :: Float) =
+    properFraction = \x ->
                       case properFraction x of {
-                        (n, y) -> ((fromIntegral :: Int -> Int32) n, y) }
+                        (n, y) -> ((fromIntegral :: Int -> Int32) n, y :: Float) }
 "truncate/Float->Int32"
-    forall x. truncate (x :: Float) = (fromIntegral :: Int -> Int32) (truncate x)
+    truncate = (fromIntegral :: Int -> Int32) . (truncate :: Float -> Int)
 "floor/Float->Int32"
-    forall x. floor    (x :: Float) = (fromIntegral :: Int -> Int32) (floor x)
+    floor    = (fromIntegral :: Int -> Int32) . (floor :: Float -> Int)
 "ceiling/Float->Int32"
-    forall x. ceiling  (x :: Float) = (fromIntegral :: Int -> Int32) (ceiling x)
+    ceiling  = (fromIntegral :: Int -> Int32) . (ceiling :: Float -> Int)
 "round/Float->Int32"
-    forall x. round    (x :: Float) = (fromIntegral :: Int -> Int32) (round x)
+    round    = (fromIntegral :: Int -> Int32) . (round  :: Float -> Int)
   #-}
 
 {-# RULES
 "properFraction/Double->(Int32,Double)"
-    forall x. properFraction (x :: Double) =
+    properFraction = \x ->
                       case properFraction x of {
-                        (n, y) -> ((fromIntegral :: Int -> Int32) n, y) }
+                        (n, y) -> ((fromIntegral :: Int -> Int32) n, y :: Double) }
 "truncate/Double->Int32"
-    forall x. truncate (x :: Double) = (fromIntegral :: Int -> Int32) (truncate x)
+    truncate = (fromIntegral :: Int -> Int32) . (truncate :: Double -> Int)
 "floor/Double->Int32"
-    forall x. floor    (x :: Double) = (fromIntegral :: Int -> Int32) (floor x)
+    floor    = (fromIntegral :: Int -> Int32) . (floor :: Double -> Int)
 "ceiling/Double->Int32"
-    forall x. ceiling  (x :: Double) = (fromIntegral :: Int -> Int32) (ceiling x)
+    ceiling  = (fromIntegral :: Int -> Int32) . (ceiling :: Double -> Int)
 "round/Double->Int32"
-    forall x. round    (x :: Double) = (fromIntegral :: Int -> Int32) (round x)
+    round    = (fromIntegral :: Int -> Int32) . (round  :: Double -> Int)
   #-}
 
 instance Real Int32 where
@@ -543,22 +546,20 @@ instance Ix Int32 where
 -- type Int64
 ------------------------------------------------------------------------
 
-#if __GLASGOW_HASKELL__ >= 706
-data {-# CTYPE "HsInt64" #-} Int64 = I64# Int64#
-#else
-data Int64 = I64# Int64#
-#endif
+#if WORD_SIZE_IN_BITS < 64
+
+data {-# CTYPE "HsInt64" #-} Int64 = I64# Int64# deriving( Typeable )
 -- ^ 64-bit signed integer type
 
 instance Eq Int64 where
-    (I64# x#) == (I64# y#) = x# `eqInt64#` y#
-    (I64# x#) /= (I64# y#) = x# `neInt64#` y#
+    (I64# x#) == (I64# y#) = isTrue# (x# `eqInt64#` y#)
+    (I64# x#) /= (I64# y#) = isTrue# (x# `neInt64#` y#)
 
 instance Ord Int64 where
-    (I64# x#) <  (I64# y#) = x# `ltInt64#` y#
-    (I64# x#) <= (I64# y#) = x# `leInt64#` y#
-    (I64# x#) >  (I64# y#) = x# `gtInt64#` y#
-    (I64# x#) >= (I64# y#) = x# `geInt64#` y#
+    (I64# x#) <  (I64# y#) = isTrue# (x# `ltInt64#` y#)
+    (I64# x#) <= (I64# y#) = isTrue# (x# `leInt64#` y#)
+    (I64# x#) >  (I64# y#) = isTrue# (x# `gtInt64#` y#)
+    (I64# x#) >= (I64# y#) = isTrue# (x# `geInt64#` y#)
 
 instance Show Int64 where
     showsPrec p x = showsPrec p (toInteger x)
@@ -634,9 +635,9 @@ divInt64#, modInt64# :: Int64# -> Int64# -> Int64#
 
 -- Define div in terms of quot, being careful to avoid overflow (#7233)
 x# `divInt64#` y#
-    | (x# `gtInt64#` zero) && (y# `ltInt64#` zero)
+    | isTrue# (x# `gtInt64#` zero) && isTrue# (y# `ltInt64#` zero)
         = ((x# `minusInt64#` one) `quotInt64#` y#) `minusInt64#` one
-    | (x# `ltInt64#` zero) && (y# `gtInt64#` zero)
+    | isTrue# (x# `ltInt64#` zero) && isTrue# (y# `gtInt64#` zero)
         = ((x# `plusInt64#` one)  `quotInt64#` y#) `minusInt64#` one
     | otherwise
         = x# `quotInt64#` y#
@@ -645,9 +646,9 @@ x# `divInt64#` y#
     !one  = intToInt64# 1#
 
 x# `modInt64#` y#
-    | (x# `gtInt64#` zero) && (y# `ltInt64#` zero) ||
-      (x# `ltInt64#` zero) && (y# `gtInt64#` zero)
-        = if r# `neInt64#` zero then r# `plusInt64#` y# else zero
+    | isTrue# (x# `gtInt64#` zero) && isTrue# (y# `ltInt64#` zero) ||
+      isTrue# (x# `ltInt64#` zero) && isTrue# (y# `gtInt64#` zero)
+        = if isTrue# (r# `neInt64#` zero) then r# `plusInt64#` y# else zero
     | otherwise = r#
     where
     !zero = intToInt64# 0#
@@ -666,24 +667,26 @@ instance Bits Int64 where
     (I64# x#) `xor` (I64# y#)  = I64# (word64ToInt64# (int64ToWord64# x# `xor64#` int64ToWord64# y#))
     complement (I64# x#)       = I64# (word64ToInt64# (not64# (int64ToWord64# x#)))
     (I64# x#) `shift` (I# i#)
-        | i# >=# 0#            = I64# (x# `iShiftL64#` i#)
+        | isTrue# (i# >=# 0#)  = I64# (x# `iShiftL64#` i#)
         | otherwise            = I64# (x# `iShiftRA64#` negateInt# i#)
     (I64# x#) `shiftL` (I# i#) = I64# (x# `iShiftL64#` i#)
     (I64# x#) `unsafeShiftL` (I# i#) = I64# (x# `uncheckedIShiftL64#` i#)
     (I64# x#) `shiftR` (I# i#) = I64# (x# `iShiftRA64#` i#)
     (I64# x#) `unsafeShiftR` (I# i#) = I64# (x# `uncheckedIShiftRA64#` i#)
     (I64# x#) `rotate` (I# i#)
-        | i'# ==# 0#
+        | isTrue# (i'# ==# 0#)
         = I64# x#
         | otherwise
         = I64# (word64ToInt64# ((x'# `uncheckedShiftL64#` i'#) `or64#`
                                 (x'# `uncheckedShiftRL64#` (64# -# i'#))))
         where
         !x'# = int64ToWord64# x#
-        !i'# = w2i (i2w i# `and#` 63##)
-    bitSize  _                 = 64
+        !i'# = word2Int# (int2Word# i# `and#` 63##)
+    bitSizeMaybe i             = Just (finiteBitSize i)
+    bitSize i                  = finiteBitSize i
     isSigned _                 = True
-    popCount (I64# x#)         = popCount (W64# (int64ToWord64# x#))
+    popCount (I64# x#)         =
+        I# (word2Int# (popCnt64# (int64ToWord64# x#)))
     bit                        = bitDefault
     testBit                    = testBitDefault
 
@@ -694,12 +697,12 @@ instance Bits Int64 where
 
 iShiftL64#, iShiftRA64# :: Int64# -> Int# -> Int64#
 
-a `iShiftL64#` b  | b >=# 64# = intToInt64# 0#
-		  | otherwise = a `uncheckedIShiftL64#` b
+a `iShiftL64#` b  | isTrue# (b >=# 64#) = intToInt64# 0#
+		  | otherwise           = a `uncheckedIShiftL64#` b
 
-a `iShiftRA64#` b | b >=# 64# = if a `ltInt64#` (intToInt64# 0#)
-					then intToInt64# (-1#)
-					else intToInt64# 0#
+a `iShiftRA64#` b | isTrue# (b >=# 64#) = if isTrue# (a `ltInt64#` (intToInt64# 0#))
+				          then intToInt64# (-1#)
+					  else intToInt64# 0#
 		  | otherwise = a `uncheckedIShiftRA64#` b
 
 {-# RULES
@@ -707,13 +710,167 @@ a `iShiftRA64#` b | b >=# 64# = if a `ltInt64#` (intToInt64# 0#)
 "fromIntegral/Word->Int64"   fromIntegral = \(W#   x#) -> I64# (word64ToInt64# (wordToWord64# x#))
 "fromIntegral/Word64->Int64" fromIntegral = \(W64# x#) -> I64# (word64ToInt64# x#)
 "fromIntegral/Int64->Int"    fromIntegral = \(I64# x#) -> I#   (int64ToInt# x#)
-"fromIntegral/Int64->Word"   fromIntegral = \(I64# x#) -> W#   (i2w (int64ToInt# x#))
+"fromIntegral/Int64->Word"   fromIntegral = \(I64# x#) -> W#   (int2Word# (int64ToInt# x#))
 "fromIntegral/Int64->Word64" fromIntegral = \(I64# x#) -> W64# (int64ToWord64# x#)
 "fromIntegral/Int64->Int64"  fromIntegral = id :: Int64 -> Int64
   #-}
 
 -- No RULES for RealFrac methods if Int is smaller than Int64, we can't
 -- go through Int and whether going through Integer is faster is uncertain.
+#else
+
+-- Int64 is represented in the same way as Int.
+-- Operations may assume and must ensure that it holds only values
+-- from its logical range.
+
+data {-# CTYPE "HsInt64" #-} Int64 = I64# Int# deriving (Eq, Ord, Typeable)
+-- ^ 64-bit signed integer type
+
+instance Show Int64 where
+    showsPrec p x = showsPrec p (fromIntegral x :: Int)
+
+instance Num Int64 where
+    (I64# x#) + (I64# y#)  = I64# (x# +# y#)
+    (I64# x#) - (I64# y#)  = I64# (x# -# y#)
+    (I64# x#) * (I64# y#)  = I64# (x# *# y#)
+    negate (I64# x#)       = I64# (negateInt# x#)
+    abs x | x >= 0         = x
+          | otherwise      = negate x
+    signum x | x > 0       = 1
+    signum 0               = 0
+    signum _               = -1
+    fromInteger i          = I64# (integerToInt i)
+
+instance Enum Int64 where
+    succ x
+        | x /= maxBound = x + 1
+        | otherwise     = succError "Int64"
+    pred x
+        | x /= minBound = x - 1
+        | otherwise     = predError "Int64"
+    toEnum (I# i#)      = I64# i#
+    fromEnum (I64# x#)  = I# x#
+    enumFrom            = boundedEnumFrom
+    enumFromThen        = boundedEnumFromThen
+
+instance Integral Int64 where
+    quot    x@(I64# x#) y@(I64# y#)
+        | y == 0                     = divZeroError
+        | y == (-1) && x == minBound = overflowError -- Note [Order of tests]
+        | otherwise                  = I64# (x# `quotInt#` y#)
+    rem       (I64# x#) y@(I64# y#)
+        | y == 0                     = divZeroError
+          -- The quotRem CPU instruction fails for minBound `quotRem` -1,
+          -- but minBound `rem` -1 is well-defined (0). We therefore
+          -- special-case it.
+        | y == (-1)                  = 0
+        | otherwise                  = I64# (x# `remInt#` y#)
+    div     x@(I64# x#) y@(I64# y#)
+        | y == 0                     = divZeroError
+        | y == (-1) && x == minBound = overflowError -- Note [Order of tests]
+        | otherwise                  = I64# (x# `divInt#` y#)
+    mod       (I64# x#) y@(I64# y#)
+        | y == 0                     = divZeroError
+          -- The divMod CPU instruction fails for minBound `divMod` -1,
+          -- but minBound `mod` -1 is well-defined (0). We therefore
+          -- special-case it.
+        | y == (-1)                  = 0
+        | otherwise                  = I64# (x# `modInt#` y#)
+    quotRem x@(I64# x#) y@(I64# y#)
+        | y == 0                     = divZeroError
+          -- Note [Order of tests]
+        | y == (-1) && x == minBound = (overflowError, 0)
+        | otherwise                  = case x# `quotRemInt#` y# of
+                                       (# q, r #) ->
+                                           (I64# q, I64# r)
+    divMod  x@(I64# x#) y@(I64# y#)
+        | y == 0                     = divZeroError
+          -- Note [Order of tests]
+        | y == (-1) && x == minBound = (overflowError, 0)
+        | otherwise                  = case x# `divModInt#` y# of
+                                       (# d, m #) ->
+                                           (I64# d, I64# m)
+    toInteger (I64# x#)              = smallInteger x#
+
+instance Read Int64 where
+    readsPrec p s = [(fromIntegral (x::Int), r) | (x, r) <- readsPrec p s]
+
+instance Bits Int64 where
+    {-# INLINE shift #-}
+    {-# INLINE bit #-}
+    {-# INLINE testBit #-}
+
+    (I64# x#) .&.   (I64# y#)  = I64# (word2Int# (int2Word# x# `and#` int2Word# y#))
+    (I64# x#) .|.   (I64# y#)  = I64# (word2Int# (int2Word# x# `or#`  int2Word# y#))
+    (I64# x#) `xor` (I64# y#)  = I64# (word2Int# (int2Word# x# `xor#` int2Word# y#))
+    complement (I64# x#)       = I64# (word2Int# (int2Word# x# `xor#` int2Word# (-1#)))
+    (I64# x#) `shift` (I# i#)
+        | isTrue# (i# >=# 0#)  = I64# (x# `iShiftL#` i#)
+        | otherwise            = I64# (x# `iShiftRA#` negateInt# i#)
+    (I64# x#) `shiftL`       (I# i#) = I64# (x# `iShiftL#` i#)
+    (I64# x#) `unsafeShiftL` (I# i#) = I64# (x# `uncheckedIShiftL#` i#)
+    (I64# x#) `shiftR`       (I# i#) = I64# (x# `iShiftRA#` i#)
+    (I64# x#) `unsafeShiftR` (I# i#) = I64# (x# `uncheckedIShiftRA#` i#)
+    (I64# x#) `rotate` (I# i#)
+        | isTrue# (i'# ==# 0#)
+        = I64# x#
+        | otherwise
+        = I64# (word2Int# ((x'# `uncheckedShiftL#` i'#) `or#`
+                           (x'# `uncheckedShiftRL#` (64# -# i'#))))
+        where
+        !x'# = int2Word# x#
+        !i'# = word2Int# (int2Word# i# `and#` 63##)
+    bitSizeMaybe i             = Just (finiteBitSize i)
+    bitSize i                  = finiteBitSize i
+    isSigned _                 = True
+    popCount (I64# x#)         = I# (word2Int# (popCnt64# (int2Word# x#)))
+    bit                        = bitDefault
+    testBit                    = testBitDefault
+
+{-# RULES
+"fromIntegral/a->Int64" fromIntegral = \x -> case fromIntegral x of I# x# -> I64# x#
+"fromIntegral/Int64->a" fromIntegral = \(I64# x#) -> fromIntegral (I# x#)
+  #-}
+
+{-# RULES
+"properFraction/Float->(Int64,Float)"
+    properFraction = \x ->
+                      case properFraction x of {
+                        (n, y) -> ((fromIntegral :: Int -> Int64) n, y :: Float) }
+"truncate/Float->Int64"
+    truncate = (fromIntegral :: Int -> Int64) . (truncate :: Float -> Int)
+"floor/Float->Int64"
+    floor    = (fromIntegral :: Int -> Int64) . (floor :: Float -> Int)
+"ceiling/Float->Int64"
+    ceiling  = (fromIntegral :: Int -> Int64) . (ceiling :: Float -> Int)
+"round/Float->Int64"
+    round    = (fromIntegral :: Int -> Int64) . (round  :: Float -> Int)
+  #-}
+
+{-# RULES
+"properFraction/Double->(Int64,Double)"
+    properFraction = \x ->
+                      case properFraction x of {
+                        (n, y) -> ((fromIntegral :: Int -> Int64) n, y :: Double) }
+"truncate/Double->Int64"
+    truncate = (fromIntegral :: Int -> Int64) . (truncate :: Double -> Int)
+"floor/Double->Int64"
+    floor    = (fromIntegral :: Int -> Int64) . (floor :: Double -> Int)
+"ceiling/Double->Int64"
+    ceiling  = (fromIntegral :: Int -> Int64) . (ceiling :: Double -> Int)
+"round/Double->Int64"
+    round    = (fromIntegral :: Int -> Int64) . (round  :: Double -> Int)
+  #-}
+
+uncheckedIShiftL64# :: Int# -> Int# -> Int#
+uncheckedIShiftL64#  = uncheckedIShiftL#
+
+uncheckedIShiftRA64# :: Int# -> Int# -> Int#
+uncheckedIShiftRA64# = uncheckedIShiftRA#
+#endif
+
+instance FiniteBits Int64 where
+    finiteBitSize _ = 64
 
 instance Real Int64 where
     toRational x = toInteger x % 1

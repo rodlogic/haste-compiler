@@ -9,10 +9,14 @@ type Match = (String -> Bool, [String] -> [String])
 
 cabal :: [String] -> IO ()
 cabal args = do
-  _ <- shell $ run_ "cabal" (hasteargs ++ args) ""
+  let fullargs = [] ++ hasteargs ++ args
+  putStrLn "====================================================="
+  putStrLn $ "==> [haste-inst] run cabal " ++ (show $ fullargs)
+  _ <- shell $ run_ "cabal" fullargs ""
+  putStrLn "====================================================="
   return ()
   where
-    hasteargs 
+    hasteargs
       | "build" `elem` args =
         ["--with-ghc=" ++ hasteBinary]
       | otherwise =

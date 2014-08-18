@@ -2,7 +2,6 @@
 {-# LANGUAGE CPP
            , NoImplicitPrelude
            , BangPatterns
-           , ForeignFunctionInterface
            , DeriveDataTypeable
   #-}
 {-# OPTIONS_GHC -fno-warn-identities #-}
@@ -54,6 +53,8 @@ import GHC.Windows
 
 import Foreign
 import Foreign.C
+import qualified System.Posix.Internals
+import System.Posix.Internals hiding (FD, setEcho, getEcho)
 import System.Posix.Types
 
 #ifdef mingw32_HOST_OS
@@ -68,34 +69,6 @@ import System.Posix.Types
 
 c_DEBUG_DUMP :: Bool
 c_DEBUG_DUMP = False
-
-c_write _ _ _ = return 0
-c_safe_write _ _ _ = return 0
-c_read _ _ _ = return 0
-c_safe_read _ _ _ = return 0
-setNonBlockingFD _ _ = return ()
-c_dup2 _ _ = return 0
-c_dup _ = return 0
-c_close _ = return 0
-fdFileSize _ = return 0
-c_lseek _ _ _ = return 0
-c_ftruncate _ _ = return 0
-c_isatty _ = return 0
-c_open _ _ _ = return 0
-c_safe_open _ _ _ = return 0
-o_NOCTTY = 0
-o_CREAT = 0
-o_RDONLY = 0
-o_WRONLY = 0
-o_RDWR = 0
-o_APPEND = 0
-o_NONBLOCK = 0
-sEEK_SET = 0
-sEEK_CUR = 0
-sEEK_END = 0
-withFilePath = withCWString
-puts _ = return ()
-fdStat _ = return (RegularFile, 0, 0)
 
 -- -----------------------------------------------------------------------------
 -- The file-descriptor IO device
@@ -196,7 +169,7 @@ openFile filepath iomode non_blocking =
                   AppendMode    -> append_flags
 
 #ifdef mingw32_HOST_OS
-      binary_flags = 0
+      binary_flags = o_BINARY
 #else
       binary_flags = 0
 #endif
@@ -243,7 +216,7 @@ nonblock_flags = o_NONBLOCK
 
 -- | Make a 'FD' from an existing file descriptor.  Fails if the FD
 -- refers to a directory.  If the FD refers to a file, `mkFD` locks
--- the file according to the Haskell 98 single writer/multiple reader
+-- the file according to the Haskell 2010 single writer/multiple reader
 -- locking semantics (this is why we need the `IOMode` argument too).
 mkFD :: CInt
      -> IOMode
@@ -306,9 +279,9 @@ getUniqueFileInfo _ dev ino = return (fromIntegral dev, fromIntegral ino)
 #else
 getUniqueFileInfo fd _ _ = do
   with 0 $ \devptr -> do
-  with 0 $ \inoptr -> do
-  c_getUniqueFileInfo fd devptr inoptr
-  liftM2 (,) (peek devptr) (peek inoptr)
+    with 0 $ \inoptr -> do
+      c_getUniqueFileInfo fd devptr inoptr
+      liftM2 (,) (peek devptr) (peek inoptr)
 #endif
 
 #ifdef mingw32_HOST_OS
@@ -341,7 +314,6 @@ stderr = stdFD 2
 
 close :: FD -> IO ()
 close fd =
-  (flip finally) (release fd) $
   do let closer realFd =
            throwErrnoIfMinus1Retry_ "GHC.IO.FD.close" $
 #ifdef mingw32_HOST_OS
@@ -350,6 +322,12 @@ close fd =
            else
 #endif
              c_close (fromIntegral realFd)
+
+     -- release the lock *first*, because otherwise if we're preempted
+     -- after closing but before releasing, the FD may have been reused.
+     -- (#7646)
+     release fd
+
      closeFdWith closer (fromIntegral (fdFD fd))
 
 release :: FD -> IO ()
@@ -435,20 +413,20 @@ foreign import ccall safe "fdReady"
 
 isTerminal :: FD -> IO Bool
 isTerminal fd =
--- #if defined(mingw32_HOST_OS)
---     is_console (fdFD fd) >>= return.toBool
--- #else
+#if defined(mingw32_HOST_OS)
+    is_console (fdFD fd) >>= return.toBool
+#else
     c_isatty (fdFD fd) >>= return.toBool
--- #endif
+#endif
 
 setEcho :: FD -> Bool -> IO () 
-setEcho fd on = return () -- System.Posix.Internals.setEcho (fdFD fd) on
+setEcho fd on = System.Posix.Internals.setEcho (fdFD fd) on
 
 getEcho :: FD -> IO Bool
-getEcho fd = return True -- System.Posix.Internals.getEcho (fdFD fd)
+getEcho fd = System.Posix.Internals.getEcho (fdFD fd)
 
 setRaw :: FD -> Bool -> IO ()
-setRaw fd raw = return () -- System.Posix.Internals.setCooked (fdFD fd) (not raw)
+setRaw fd raw = System.Posix.Internals.setCooked (fdFD fd) (not raw)
 
 -- -----------------------------------------------------------------------------
 -- Reading and Writing

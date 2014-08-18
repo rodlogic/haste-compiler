@@ -8,10 +8,13 @@ import Control.Shell
 
 main = shell $ do
   args <- liftIO getArgs
+  --liftIO $ putStrLn $ "==> [haste-pkg] main " ++ (show args)
   pkgDirExists <- isDirectory pkgDir
   when (not pkgDirExists) $ do
     mkdir True pkgLibDir
+    --liftIO $ putStrLn $ "==> [haste-pkg] runInteractive ghc-pkg " ++ (show args)
     runInteractive "ghc-pkg" ["init", pkgDir]
+  --liftIO $ putStrLn $ "==> [haste-pkg] runInteractive ghc-pkg " ++ (show args)
   runInteractive "ghc-pkg" (packages ++ map userToGlobal args)
   where
 #if __GLASGOW_HASKELL__ >= 706

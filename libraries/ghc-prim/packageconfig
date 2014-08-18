@@ -1,6 +1,6 @@
 name: ghc-prim
-version: 0.3.0.0
-id: ghc-prim-0.3.0.0-d5221a8c8a269b66ab9a07bdc23317dd
+version: 0.3.1.0
+id: ghc-prim-0.3.1.0-948744e1f99cc8bcc7c7d3ba60c7c2d8
 license: BSD3
 copyright:
 maintainer: libraries@haskell.org
@@ -9,15 +9,15 @@ homepage:
 package-url:
 synopsis: GHC primitives
 description: GHC primitives.
-category:
+category: GHC
 author:
 exposed: True
-exposed-modules: GHC.Prim GHC.Classes GHC.CString GHC.Debug
-                 GHC.Magic GHC.IntWord64 GHC.Tuple GHC.Types
+exposed-modules: GHC.CString GHC.Classes GHC.Debug GHC.IntWord64
+                 GHC.Magic GHC.Tuple GHC.Types GHC.Prim
 hidden-modules:
 trusted: False
-import-dirs: ${pkgroot}/libraries/lib/ghc-prim-0.3.0.0
-library-dirs: ${pkgroot}/libraries/lib/ghc-prim-0.3.0.0
+import-dirs: ${pkgroot}/libraries/lib/ghc-prim-0.3.1.0
+library-dirs: ${pkgroot}/libraries/lib/ghc-prim-0.3.1.0
 hs-libraries:
 extra-libraries:
 extra-ghci-libraries:

@@ -1,6 +1,5 @@
 {-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE CPP
-           , NoImplicitPrelude
+{-# LANGUAGE NoImplicitPrelude
            , BangPatterns
            , NondecreasingIndentation
            , MagicHash
@@ -39,7 +38,6 @@ module GHC.IO.Encoding.UTF16 (
   utf16le_encode,
   ) where
 
-import GHC.HasteWordInt
 import GHC.Base
 import GHC.Real
 import GHC.Num
@@ -58,6 +56,7 @@ import GHC.IORef
 utf16  :: TextEncoding
 utf16 = mkUTF16 ErrorOnCodingFailure
 
+-- | /Since: 4.4.0.0/
 mkUTF16 :: CodingFailureMode -> TextEncoding
 mkUTF16 cfm =  TextEncoding { textEncodingName = "UTF-16",
                               mkTextDecoder = utf16_DF cfm,
@@ -143,6 +142,7 @@ bom2 = bomL
 utf16be :: TextEncoding
 utf16be = mkUTF16be ErrorOnCodingFailure
 
+-- | /Since: 4.4.0.0/
 mkUTF16be :: CodingFailureMode -> TextEncoding
 mkUTF16be cfm = TextEncoding { textEncodingName = "UTF-16BE",
                                mkTextDecoder = utf16be_DF cfm,
@@ -171,6 +171,7 @@ utf16be_EF cfm =
 utf16le :: TextEncoding
 utf16le = mkUTF16le ErrorOnCodingFailure
 
+-- | /Since: 4.4.0.0/
 mkUTF16le :: CodingFailureMode -> TextEncoding
 mkUTF16le cfm = TextEncoding { textEncodingName = "UTF16-LE",
                                mkTextDecoder = utf16le_DF cfm,
@@ -342,8 +343,8 @@ utf16le_encode
 chr2 :: Word16 -> Word16 -> Char
 chr2 (W16# a#) (W16# b#) = C# (chr# (upper# +# lower# +# 0x10000#))
     where
-      !x# = w2i a#
-      !y# = w2i b#
+      !x# = word2Int# a#
+      !y# = word2Int# b#
       !upper# = uncheckedIShiftL# (x# -# 0xD800#) 10#
       !lower# = y# -# 0xDC00#
 {-# INLINE chr2 #-}

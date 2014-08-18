@@ -7,7 +7,7 @@
  * Do not #include this file directly: #include "Rts.h" instead.
  *
  * To understand the structure of the RTS headers, see the wiki:
- *   http://hackage.haskell.org/trac/ghc/wiki/Commentary/SourceTree/Includes
+ *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/SourceTree/Includes
  *
  * -------------------------------------------------------------------------- */
 
@@ -52,13 +52,14 @@ EXTERN_INLINE StgWord xchg(StgPtr p, StgWord w);
 EXTERN_INLINE StgWord cas(StgVolatilePtr p, StgWord o, StgWord n);
 
 /*
- * Atomic increment
+ * Atomic addition by the provided quantity
  *
- * atomic_inc(p) {
- *   return ++(*p);
+ * atomic_inc(p, n) {
+ *   return ((*p) += n);
  * }
  */
-EXTERN_INLINE StgWord atomic_inc(StgVolatilePtr p);
+EXTERN_INLINE StgWord atomic_inc(StgVolatilePtr p, StgWord n);
+
 
 /*
  * Atomic decrement
@@ -106,7 +107,10 @@ EXTERN_INLINE StgWord
 xchg(StgPtr p, StgWord w)
 {
     StgWord result;
-#if i386_HOST_ARCH || x86_64_HOST_ARCH
+#if defined(NOSMP)
+    result = *p;
+    *p = w;
+#elif i386_HOST_ARCH || x86_64_HOST_ARCH
     result = w;
     __asm__ __volatile__ (
         // NB: the xchg instruction is implicitly locked, so we do not
@@ -153,9 +157,6 @@ xchg(StgPtr p, StgWord w)
                           : "r" (w), "r" (p)
                           : "memory"
                           );
-#elif !defined(WITHSMP)
-    result = *p;
-    *p = w;
 #else
 #error xchg() unimplemented on this architecture
 #endif
@@ -169,10 +170,17 @@ xchg(StgPtr p, StgWord w)
 EXTERN_INLINE StgWord
 cas(StgVolatilePtr p, StgWord o, StgWord n)
 {
-#if i386_HOST_ARCH || x86_64_HOST_ARCH
+#if defined(NOSMP)
+    StgWord result;
+    result = *p;
+    if (result == o) {
+        *p = n;
+    }
+    return result;
+#elif i386_HOST_ARCH || x86_64_HOST_ARCH
     __asm__ __volatile__ (
  	  "lock\ncmpxchg %3,%1"
-          :"=a"(o), "=m" (*(volatile unsigned int *)p) 
+          :"=a"(o), "+m" (*(volatile unsigned int *)p)
           :"0" (o), "r" (n));
     return o;
 #elif powerpc_HOST_ARCH
@@ -224,34 +232,29 @@ cas(StgVolatilePtr p, StgWord o, StgWord n)
                 : "cc","memory");
 
     return result;
-#elif !defined(WITHSMP)
-    StgWord result;
-    result = *p;
-    if (result == o) {
-        *p = n;
-    }
-    return result;
 #else
 #error cas() unimplemented on this architecture
 #endif
 }
 
+// RRN: Generalized to arbitrary increments to enable fetch-and-add in
+// Haskell code (fetchAddIntArray#).
 EXTERN_INLINE StgWord
-atomic_inc(StgVolatilePtr p)
+atomic_inc(StgVolatilePtr p, StgWord incr)
 {
 #if defined(i386_HOST_ARCH) || defined(x86_64_HOST_ARCH)
     StgWord r;
-    r = 1;
+    r = incr;
     __asm__ __volatile__ (
         "lock\nxadd %0,%1":
             "+r" (r), "+m" (*p):
     );
-    return r+1;
+    return r + incr;
 #else
     StgWord old, new;
     do {
         old = *p;
-        new = old + 1;
+        new = old + incr;
     } while (cas(p, old, new) != old);
     return new;
 #endif
@@ -299,7 +302,9 @@ busy_wait_nop(void)
  */
 EXTERN_INLINE void
 write_barrier(void) {
-#if i386_HOST_ARCH || x86_64_HOST_ARCH
+#if defined(NOSMP)
+    return;
+#elif i386_HOST_ARCH || x86_64_HOST_ARCH
     __asm__ __volatile__ ("" : : : "memory");
 #elif powerpc_HOST_ARCH
     __asm__ __volatile__ ("lwsync" : : : "memory");
@@ -310,8 +315,6 @@ write_barrier(void) {
     __asm__ __volatile__ ("" : : : "memory");
 #elif arm_HOST_ARCH && !defined(arm_HOST_ARCH_PRE_ARMv7)
     __asm__ __volatile__ ("dmb  st" : : : "memory");
-#elif !defined(WITHSMP)
-    return;
 #else
 #error memory barriers unimplemented on this architecture
 #endif
@@ -319,7 +322,9 @@ write_barrier(void) {
 
 EXTERN_INLINE void
 store_load_barrier(void) {
-#if i386_HOST_ARCH
+#if defined(NOSMP)
+    return;
+#elif i386_HOST_ARCH
     __asm__ __volatile__ ("lock; addl $0,0(%%esp)" : : : "memory");
 #elif x86_64_HOST_ARCH
     __asm__ __volatile__ ("lock; addq $0,0(%%rsp)" : : : "memory");
@@ -329,8 +334,6 @@ store_load_barrier(void) {
     __asm__ __volatile__ ("membar #StoreLoad" : : : "memory");
 #elif arm_HOST_ARCH && !defined(arm_HOST_ARCH_PRE_ARMv7)
     __asm__ __volatile__ ("dmb" : : : "memory");
-#elif !defined(WITHSMP)
-    return;
 #else
 #error memory barriers unimplemented on this architecture
 #endif
@@ -338,7 +341,9 @@ store_load_barrier(void) {
 
 EXTERN_INLINE void
 load_load_barrier(void) {
-#if i386_HOST_ARCH
+#if defined(NOSMP)
+    return;
+#elif i386_HOST_ARCH
     __asm__ __volatile__ ("" : : : "memory");
 #elif x86_64_HOST_ARCH
     __asm__ __volatile__ ("" : : : "memory");
@@ -349,8 +354,6 @@ load_load_barrier(void) {
     __asm__ __volatile__ ("" : : : "memory");
 #elif arm_HOST_ARCH && !defined(arm_HOST_ARCH_PRE_ARMv7)
     __asm__ __volatile__ ("dmb" : : : "memory");
-#elif !defined(WITHSMP)
-    return;
 #else
 #error memory barriers unimplemented on this architecture
 #endif
@@ -365,9 +368,12 @@ load_load_barrier(void) {
 /* ---------------------------------------------------------------------- */
 #else /* !THREADED_RTS */
 
-#define write_barrier()      /* nothing */
-#define store_load_barrier() /* nothing */
-#define load_load_barrier()  /* nothing */
+EXTERN_INLINE void write_barrier(void);
+EXTERN_INLINE void store_load_barrier(void);
+EXTERN_INLINE void load_load_barrier(void);
+EXTERN_INLINE void write_barrier     () {} /* nothing */
+EXTERN_INLINE void store_load_barrier() {} /* nothing */
+EXTERN_INLINE void load_load_barrier () {} /* nothing */
 
 #if !IN_STG_CODE || IN_STGCRUN
 INLINE_HEADER StgWord
@@ -390,11 +396,13 @@ cas(StgVolatilePtr p, StgWord o, StgWord n)
     return result;
 }
 
-INLINE_HEADER StgWord
-atomic_inc(StgVolatilePtr p)
+EXTERN_INLINE StgWord atomic_inc(StgVolatilePtr p, StgWord incr);
+EXTERN_INLINE StgWord
+atomic_inc(StgVolatilePtr p, StgWord incr)
 {
-    return ++(*p);
+    return ((*p) += incr);
 }
+
 
 INLINE_HEADER StgWord
 atomic_dec(StgVolatilePtr p)

@@ -12,6 +12,7 @@ import Control.Shell
 main :: IO ()
 main = do
   args <- getArgs
+  putStrLn $ "==> [haste-install-his] " ++ show args
   case args of
     [package, dir] -> shell $ installFromDir (pkgLibDir </> package) dir
     _              -> shell $ echo "Usage: haste-install-his pkgname dir"
@@ -32,6 +33,7 @@ getSubdirs dir = do
 
 installFromDir :: FilePath -> FilePath -> Shell ()
 installFromDir base path = do
+  liftIO $ putStrLn $ "==> [haste-install-his] install his from dir " ++ (show base)
   hiFiles <- getHiFiles path
   when (not $ null hiFiles) $ do
     mkdir True (pkgLibDir </> base)

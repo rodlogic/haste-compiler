@@ -38,7 +38,6 @@ module GHC.IO.Encoding.UTF32 (
   utf32le_encode,
   ) where
 
-import GHC.HasteWordInt
 import GHC.Base
 import GHC.Real
 import GHC.Num
@@ -57,6 +56,7 @@ import GHC.IORef
 utf32  :: TextEncoding
 utf32 = mkUTF32 ErrorOnCodingFailure
 
+-- | /Since: 4.4.0.0/
 mkUTF32 :: CodingFailureMode -> TextEncoding
 mkUTF32 cfm = TextEncoding { textEncodingName = "UTF-32",
                              mkTextDecoder = utf32_DF cfm,
@@ -145,6 +145,7 @@ utf32_native_encode = utf32be_encode
 utf32be :: TextEncoding
 utf32be = mkUTF32be ErrorOnCodingFailure
 
+-- | /Since: 4.4.0.0/
 mkUTF32be :: CodingFailureMode -> TextEncoding
 mkUTF32be cfm = TextEncoding { textEncodingName = "UTF-32BE",
                                mkTextDecoder = utf32be_DF cfm,
@@ -174,6 +175,7 @@ utf32be_EF cfm =
 utf32le :: TextEncoding
 utf32le = mkUTF32le ErrorOnCodingFailure
 
+-- | /Since: 4.4.0.0/
 mkUTF32le :: CodingFailureMode -> TextEncoding
 mkUTF32le cfm = TextEncoding { textEncodingName = "UTF-32LE",
                                mkTextDecoder = utf32le_DF cfm,
@@ -308,10 +310,10 @@ chr4 :: Word8 -> Word8 -> Word8 -> Word8 -> Char
 chr4 (W8# x1#) (W8# x2#) (W8# x3#) (W8# x4#) =
     C# (chr# (z1# +# z2# +# z3# +# z4#))
     where
-      !y1# = w2i x1#
-      !y2# = w2i x2#
-      !y3# = w2i x3#
-      !y4# = w2i x4#
+      !y1# = word2Int# x1#
+      !y2# = word2Int# x2#
+      !y3# = word2Int# x3#
+      !y4# = word2Int# x4#
       !z1# = uncheckedIShiftL# y1# 24#
       !z2# = uncheckedIShiftL# y2# 16#
       !z3# = uncheckedIShiftL# y3# 8#

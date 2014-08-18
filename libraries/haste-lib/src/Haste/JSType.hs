@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, ForeignFunctionInterface, MagicHash, 
+{-# LANGUAGE MultiParamTypeClasses, ForeignFunctionInterface, MagicHash,
              TypeSynonymInstances, FlexibleInstances, EmptyDataDecls,
              UnliftedFFITypes, UndecidableInstances, CPP #-}
 -- | Efficient conversions to and from JS native types.
@@ -83,8 +83,8 @@ instance JSNum Word32 where
 
 instance JSNum Integer where
   toNumber (S# n) = toNumber (I# n)
-  toNumber (J# n) = unsafeCoerce# (jsIToInt n)
-  fromNumber n    = J# (jsNumToI (unsafeCoerce# n))
+  toNumber (J# _ n) = unsafeCoerce# (jsIToInt n)
+  fromNumber n    = J# 0# (jsNumToI (unsafeCoerce# n))
 
 instance JSNum Float where
   fromNumber = unsafeCoerce#

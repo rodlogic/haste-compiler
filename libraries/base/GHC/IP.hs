@@ -1,11 +1,10 @@
-#if __GLASGOW_HASKELL__ < 706
-module GHC.IP where
-#else
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE DataKinds #-}
 {-# OPTIONS_GHC -XNoImplicitPrelude #-}
+
+-- | /Since: 4.6.0.0/
 module GHC.IP (IP(..)) where
 
 import GHC.TypeLits
@@ -15,4 +14,3 @@ class IP (x :: Symbol) a | x -> a where
   ip :: a
 
 
-#endif

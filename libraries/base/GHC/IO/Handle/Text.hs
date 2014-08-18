@@ -3,10 +3,8 @@
            , NoImplicitPrelude
            , RecordWildCards
            , BangPatterns
-           , PatternGuards
            , NondecreasingIndentation
            , MagicHash
-           , ForeignFunctionInterface
   #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_GHC -fno-warn-unused-matches #-}
@@ -26,7 +24,6 @@
 --
 -----------------------------------------------------------------------------
 
--- #hide
 module GHC.IO.Handle.Text ( 
         hWaitForInput, hGetChar, hGetLine, hGetContents, hPutChar, hPutStr,
         commitBuffer',       -- hack, see below
@@ -61,8 +58,6 @@ import GHC.Num
 import GHC.Show
 import GHC.List
 
-import Haste.Handle
-
 -- ---------------------------------------------------------------------------
 -- Simple input operations
 
@@ -89,7 +84,7 @@ import Haste.Handle
 --    in this Handle's encoding.
 --
 -- NOTE for GHC users: unless you use the @-threaded@ flag,
--- @hWaitForInput t@ where @t >= 0@ will block all other Haskell
+-- @hWaitForInput hdl t@ where @t >= 0@ will block all other Haskell
 -- threads for the duration of the call.  It behaves like a
 -- @safe@ foreign call in this respect.
 --
@@ -193,11 +188,62 @@ hGetChar handle =
 
 hGetLine :: Handle -> IO String
 hGetLine h =
-    go ""
-  where
-    go buf = do
-      [c] <- jshRead h 1
-      if c == '\n' then return (reverse buf) else go (c:buf)
+  wantReadableHandle_ "hGetLine" h $ \ handle_ -> do
+     hGetLineBuffered handle_
+
+hGetLineBuffered :: Handle__ -> IO String
+hGetLineBuffered handle_@Handle__{..} = do
+  buf <- readIORef haCharBuffer
+  hGetLineBufferedLoop handle_ buf []
+
+hGetLineBufferedLoop :: Handle__
+                     -> CharBuffer -> [String]
+                     -> IO String
+hGetLineBufferedLoop handle_@Handle__{..}
+        buf@Buffer{ bufL=r0, bufR=w, bufRaw=raw0 } xss =
+  let
+        -- find the end-of-line character, if there is one
+        loop raw r
+           | r == w = return (False, w)
+           | otherwise =  do
+                (c,r') <- readCharBuf raw r
+                if c == '\n'
+                   then return (True, r) -- NB. not r': don't include the '\n'
+                   else loop raw r'
+  in do
+  (eol, off) <- loop raw0 r0
+
+  debugIO ("hGetLineBufferedLoop: r=" ++ show r0 ++ ", w=" ++ show w ++ ", off=" ++ show off)
+
+  (xs,r') <- if haInputNL == CRLF
+                then unpack_nl raw0 r0 off ""
+                else do xs <- unpack raw0 r0 off ""
+                        return (xs,off)
+
+  -- if eol == True, then off is the offset of the '\n'
+  -- otherwise off == w and the buffer is now empty.
+  if eol -- r' == off
+        then do writeIORef haCharBuffer (bufferAdjustL (off+1) buf)
+                return (concat (reverse (xs:xss)))
+        else do
+             let buf1 = bufferAdjustL r' buf
+             maybe_buf <- maybeFillReadBuffer handle_ buf1
+             case maybe_buf of
+                -- Nothing indicates we caught an EOF, and we may have a
+                -- partial line to return.
+                Nothing -> do
+                     -- we reached EOF.  There might be a lone \r left
+                     -- in the buffer, so check for that and
+                     -- append it to the line if necessary.
+                     -- 
+                     let pre = if not (isEmptyBuffer buf1) then "\r" else ""
+                     writeIORef haCharBuffer buf1{ bufL=0, bufR=0 }
+                     let str = concat (reverse (pre:xs:xss))
+                     if not (null str)
+                        then return str
+                        else ioe_EOF
+                Just new_buf ->
+                     hGetLineBufferedLoop handle_ new_buf (xs:xss)
 
 maybeFillReadBuffer :: Handle__ -> CharBuffer -> IO (Maybe CharBuffer)
 maybeFillReadBuffer handle_ buf
@@ -419,7 +465,10 @@ getSomeCharacters handle_@Handle__{..} buf@Buffer{..} =
 --  * 'isPermissionError' if another system resource limit would be exceeded.
 
 hPutChar :: Handle -> Char -> IO ()
-hPutChar handle c = jshWrite handle [c]
+hPutChar handle c = do
+    c `seq` return ()
+    wantWritableHandle "hPutChar" handle $ \ handle_  -> do
+     hPutcBuffered handle_ c
 
 hPutcBuffered :: Handle__ -> Char -> IO ()
 hPutcBuffered handle_@Handle__{..} c = do
@@ -477,11 +526,35 @@ hPutcBuffered handle_@Handle__{..} c = do
 --  * 'isPermissionError' if another system resource limit would be exceeded.
 
 hPutStr :: Handle -> String -> IO ()
-hPutStr handle str = jshWrite handle str
+hPutStr handle str = hPutStr' handle str False
 
 -- | The same as 'hPutStr', but adds a newline character.
 hPutStrLn :: Handle -> String -> IO ()
-hPutStrLn handle str = jshWrite handle str >> jshWrite handle "\n"
+hPutStrLn handle str = hPutStr' handle str True
+  -- An optimisation: we treat hPutStrLn specially, to avoid the
+  -- overhead of a single putChar '\n', which is quite high now that we
+  -- have to encode eagerly.
+
+hPutStr' :: Handle -> String -> Bool -> IO ()
+hPutStr' handle str add_nl =
+  do
+    (buffer_mode, nl) <-
+         wantWritableHandle "hPutStr" handle $ \h_ -> do
+                       bmode <- getSpareBuffer h_
+                       return (bmode, haOutputNL h_)
+
+    case buffer_mode of
+       (NoBuffering, _) -> do
+            hPutChars handle str        -- v. slow, but we don't care
+            when add_nl $ hPutChar handle '\n'
+       (LineBuffering, buf) -> do
+            writeBlocks handle True  add_nl nl buf str
+       (BlockBuffering _, buf) -> do
+            writeBlocks handle False add_nl nl buf str
+
+hPutChars :: Handle -> [Char] -> IO ()
+hPutChars _      [] = return ()
+hPutChars handle (c:cs) = hPutChar handle c >> hPutChars handle cs
 
 getSpareBuffer :: Handle__ -> IO (BufferMode, CharBuffer)
 getSpareBuffer Handle__{haCharBuffer=ref, 
@@ -802,9 +875,9 @@ hGetBufSome h ptr count
          flushCharReadBuffer h_
          buf@Buffer{ bufSize=sz } <- readIORef haByteBuffer
          if isEmptyBuffer buf
-            then if count > sz  -- large read?
-                    then do RawIO.read (haFD h_) (castPtr ptr) count
-                    else do (r,buf') <- Buffered.fillReadBuffer haDevice buf
+            then case count > sz of  -- large read? optimize it with a little special case:
+                    True | Just fd <- haFD h_ -> do RawIO.read fd (castPtr ptr) count
+                    _ -> do (r,buf') <- Buffered.fillReadBuffer haDevice buf
                             if r == 0
                                then return 0
                                else do writeIORef haByteBuffer buf'
@@ -816,11 +889,8 @@ hGetBufSome h ptr count
               let count' = min count (bufferElems buf)
               in bufReadNBNonEmpty h_ buf (castPtr ptr) 0 count'
 
-haFD :: Handle__ -> FD
-haFD h_@Handle__{..} =
-   case cast haDevice of
-             Nothing -> error "not an FD"
-             Just fd -> fd
+haFD :: Handle__ -> Maybe FD
+haFD h_@Handle__{..} = cast haDevice
 
 -- | 'hGetBufNonBlocking' @hdl buf count@ reads data from the handle @hdl@
 -- into the buffer @buf@ until either EOF is reached, or

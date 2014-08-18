@@ -32,7 +32,6 @@
 --
 -----------------------------------------------------------------------------
 
--- #hide
 module GHC.Show
         (
         Show(..), ShowS,
@@ -55,10 +54,9 @@ import GHC.Base
 import GHC.Num
 import Data.Maybe
 import GHC.List ((!!), foldr1, break)
-import GHC.Integer (integerToJSString)
-import GHC.HastePrim
-
 \end{code}
+
+
 
 %*********************************************************
 %*                                                      *
@@ -158,6 +156,7 @@ class  Show a  where
     showsPrec _ x s = show x ++ s
     show x          = shows x ""
     showList ls   s = showList__ shows ls s
+    {-# MINIMAL showsPrec | show #-}
 
 showList__ :: (a -> ShowS) ->  [a] -> ShowS
 showList__ _     []     s = "[]" ++ s
@@ -206,10 +205,14 @@ instance Show Int where
     showsPrec = showSignedInt
 
 instance Show Word where
-    showsPrec _ w = (jsShowW w ++)
+    showsPrec _ (W# w) = showWord w
 
 showWord :: Word# -> ShowS
-showWord w = (jsShowW (W# w) ++)
+showWord w# cs
+ | isTrue# (w# `ltWord#` 10##) = C# (chr# (ord# '0'# +# word2Int# w#)) : cs
+ | otherwise = case chr# (ord# '0'# +# word2Int# (w# `remWord#` 10##)) of
+               c# ->
+                   showWord (w# `quotWord#` 10##) (C# c# : cs)
 
 instance Show a => Show (Maybe a) where
     showsPrec _p Nothing s = showString "Nothing" s
@@ -363,7 +366,7 @@ showLitChar '\t'           s =  showString "\\t" s
 showLitChar '\v'           s =  showString "\\v" s
 showLitChar '\SO'          s =  protectEsc (== 'H') (showString "\\SO") s
 showLitChar c              s =  showString ('\\' : asciiTab!!ord c) s
-        -- I've done manual eta-expansion here, becuase otherwise it's
+        -- I've done manual eta-expansion here, because otherwise it's
         -- impossible to stop (asciiTab!!ord) getting floated out as an MFE
 
 showLitString :: String -> ShowS
@@ -387,12 +390,12 @@ showMultiLineString :: String -> [String]
 --   * break the string into multiple lines
 --   * wrap the entire thing in double quotes
 -- Example:  @showMultiLineString "hello\ngoodbye\nblah"@
--- returns   @["\"hello\\", "\\goodbye\\", "\\blah\""]@
+-- returns   @["\"hello\\n\\", "\\goodbye\n\\", "\\blah\""]@
 showMultiLineString str
   = go '\"' str
   where
     go ch s = case break (== '\n') s of
-                (l, _:s'@(_:_)) -> (ch : showLitString l "\\") : go '\\' s'
+                (l, _:s'@(_:_)) -> (ch : showLitString l "\\n\\") : go '\\' s'
                 (l, _)          -> [ch : showLitString l "\""]
 
 isDec :: Char -> Bool
@@ -421,18 +424,35 @@ Code specific for Ints.
 -- lower-case hexadecimal digits.
 intToDigit :: Int -> Char
 intToDigit (I# i)
-    | i >=# 0#  && i <=#  9# =  unsafeChr (ord '0' + I# i)
-    | i >=# 10# && i <=# 15# =  unsafeChr (ord 'a' + I# i - 10)
-    | otherwise           =  error ("Char.intToDigit: not a digit " ++ show (I# i))
+    | isTrue# (i >=# 0#)  && isTrue# (i <=#  9#) = unsafeChr (ord '0' + I# i)
+    | isTrue# (i >=# 10#) && isTrue# (i <=# 15#) = unsafeChr (ord 'a' + I# i - 10)
+    | otherwise =  error ("Char.intToDigit: not a digit " ++ show (I# i))
 
 showSignedInt :: Int -> Int -> ShowS
 showSignedInt (I# p) (I# n) r
-    | n <# 0# && p ># 6# = '(' : itos n (')' : r)
-    | otherwise          = itos n r
+    | isTrue# (n <# 0#) && isTrue# (p ># 6#) = '(' : itos n (')' : r)
+    | otherwise                              = itos n r
 
 itos :: Int# -> String -> String
-itos n cs = jsShowI (I# n) ++ cs
-
+itos n# cs
+    | isTrue# (n# <# 0#) =
+        let !(I# minInt#) = minInt in
+        if isTrue# (n# ==# minInt#)
+                -- negateInt# minInt overflows, so we can't do that:
+           then '-' : (case n# `quotRemInt#` 10# of
+                       (# q, r #) ->
+                           itos' (negateInt# q) (itos' (negateInt# r) cs))
+           else '-' : itos' (negateInt# n#) cs
+    | otherwise = itos' n# cs
+    where
+    itos' :: Int# -> String -> String
+    itos' x# cs'
+        | isTrue# (x# <# 10#) = C# (chr# (ord# '0'# +# x#)) : cs'
+        | otherwise = case x# `quotRemInt#` 10# of
+                      (# q, r #) ->
+                          case chr# (ord# '0'# +# r) of
+                          c# ->
+                              itos' q (C# c# : cs')
 \end{code}
 
 
@@ -452,6 +472,83 @@ instance Show Integer where
         | otherwise = integerToString n r
     showList = showList__ (showsPrec 0)
 
+-- Divide an conquer implementation of string conversion
 integerToString :: Integer -> String -> String
-integerToString n s = unsafeCoerce# (fromJSStr# (integerToJSString n)) ++ s
+integerToString n0 cs0
+    | n0 < 0    = '-' : integerToString' (- n0) cs0
+    | otherwise = integerToString' n0 cs0
+    where
+    integerToString' :: Integer -> String -> String
+    integerToString' n cs
+        | n < BASE  = jhead (fromInteger n) cs
+        | otherwise = jprinth (jsplitf (BASE*BASE) n) cs
+
+    -- Split n into digits in base p. We first split n into digits
+    -- in base p*p and then split each of these digits into two.
+    -- Note that the first 'digit' modulo p*p may have a leading zero
+    -- in base p that we need to drop - this is what jsplith takes care of.
+    -- jsplitb the handles the remaining digits.
+    jsplitf :: Integer -> Integer -> [Integer]
+    jsplitf p n
+        | p > n     = [n]
+        | otherwise = jsplith p (jsplitf (p*p) n)
+
+    jsplith :: Integer -> [Integer] -> [Integer]
+    jsplith p (n:ns) =
+        case n `quotRemInteger` p of
+        (# q, r #) ->
+            if q > 0 then q : r : jsplitb p ns
+                     else     r : jsplitb p ns
+    jsplith _ [] = error "jsplith: []"
+
+    jsplitb :: Integer -> [Integer] -> [Integer]
+    jsplitb _ []     = []
+    jsplitb p (n:ns) = case n `quotRemInteger` p of
+                       (# q, r #) ->
+                           q : r : jsplitb p ns
+
+    -- Convert a number that has been split into digits in base BASE^2
+    -- this includes a last splitting step and then conversion of digits
+    -- that all fit into a machine word.
+    jprinth :: [Integer] -> String -> String
+    jprinth (n:ns) cs =
+        case n `quotRemInteger` BASE of
+        (# q', r' #) ->
+            let q = fromInteger q'
+                r = fromInteger r'
+            in if q > 0 then jhead q $ jblock r $ jprintb ns cs
+                        else jhead r $ jprintb ns cs
+    jprinth [] _ = error "jprinth []"
+
+    jprintb :: [Integer] -> String -> String
+    jprintb []     cs = cs
+    jprintb (n:ns) cs = case n `quotRemInteger` BASE of
+                        (# q', r' #) ->
+                            let q = fromInteger q'
+                                r = fromInteger r'
+                            in jblock q $ jblock r $ jprintb ns cs
+
+    -- Convert an integer that fits into a machine word. Again, we have two
+    -- functions, one that drops leading zeros (jhead) and one that doesn't
+    -- (jblock)
+    jhead :: Int -> String -> String
+    jhead n cs
+        | n < 10    = case unsafeChr (ord '0' + n) of
+            c@(C# _) -> c : cs
+        | otherwise = case unsafeChr (ord '0' + r) of
+            c@(C# _) -> jhead q (c : cs)
+        where
+        (q, r) = n `quotRemInt` 10
+
+    jblock = jblock' {- ' -} DIGITS
+
+    jblock' :: Int -> Int -> String -> String
+    jblock' d n cs
+        | d == 1    = case unsafeChr (ord '0' + n) of
+             c@(C# _) -> c : cs
+        | otherwise = case unsafeChr (ord '0' + r) of
+             c@(C# _) -> jblock' (d - 1) q (c : cs)
+        where
+        (q, r) = n `quotRemInt` 10
 \end{code}
+
