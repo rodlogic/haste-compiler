@@ -18,13 +18,13 @@ j :: String -> (JQuery -> IO ()) -> IO ()
 j s action = js_jquery (toJSString s) >>= action
 
 -- | Register an onclick callback.
-click :: (Int -> IO ()) -> JQuery -> IO ()
-click f jq = js_click jq (mkCallback f)
+aclick :: (Int -> IO ()) -> JQuery -> IO ()
+aclick f jq = js_click jq (mkCallback f)
 
 -- | Hide an element.
 hide :: JQuery -> IO ()
 hide jq = js_hide jq
 
 main = do
-  j "#closeBlack" $ click (\button -> when (button == 0) (j "#blackBox" $ hide))
-  j "#closeRed" $ click (\button -> when (button == 0) (j "#redBox" $ hide))
+  j "#closeBlack" $ aclick (\button -> when (button == 0) (j "#blackBox" $ hide))
+  j "#closeRed" $ aclick (\button -> when (button == 0) (j "#redBox" $ hide))

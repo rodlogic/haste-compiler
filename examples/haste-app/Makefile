@@ -4,9 +4,11 @@ haste-app.js: haste-app.hs
 	hastec haste-app.hs
 
 haste-app:
-	ghc --make haste-app.hs
+	cabal sandbox init --sandbox=../../.cabal-sandbox
+	cabal install
 
 clean:
+	-cabal clean
 	-rm -r main
 	-rm *~
 	-rm haste-app.hi

@@ -16,6 +16,7 @@ main = do
 
     trade <- remote $ \newmsg -> do
       message <- remoteMsg
+      liftIO $ putStrLn ("Received: " ++ newmsg)
       liftIO $ do oldmsg <- C.takeMVar message
                   C.putMVar message newmsg
                   return oldmsg

@@ -1,4 +1,3 @@
-.*
 *~
 \#*
 *.hi
@@ -6,3 +5,4 @@
 *.jsmod
 dist/
 cabal.sandbox.config
+.cabal-sandbox
