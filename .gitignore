@@ -5,3 +5,4 @@
 *.o
 *.jsmod
 dist/
+cabal.sandbox.config
